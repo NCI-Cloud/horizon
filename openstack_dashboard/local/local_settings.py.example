@@ -636,3 +636,16 @@ REST_API_REQUIRED_SETTINGS = ['OPENSTACK_HYPERVISOR_FEATURES']
 # and are not encrypted on the browser. This is an experimental API and
 # may be deprecated in the future without notice.
 #REST_API_ADDITIONAL_SETTINGS = []
+
+
+import logging
+
+# Load defaults for NCI Partner Cloud.
+# NB: We use "execfile()" here instead of "import" so that it's evaluated
+# in the current namespace context and so can access/modify any values
+# set above.
+NCI_DEFAULTS_PY = os.path.join(LOCAL_PATH, "nci", "settings_defaults.py")
+if os.path.exists(NCI_DEFAULTS_PY):
+    execfile(NCI_DEFAULTS_PY)
+else:
+    logging.warning("Settings file not found: %s" % NCI_DEFAULTS_PY)
