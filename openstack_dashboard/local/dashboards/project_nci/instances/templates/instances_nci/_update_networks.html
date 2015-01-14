@@ -1,0 +1,13 @@
+{% include "project/instances/_update_networks.html" %}
+
+<script src="{{ STATIC_URL }}project_nci/js/instances_workflow.js" type="text/javascript" charset="utf-8"></script>
+
+<script>
+  if (typeof $ !== 'undefined') {
+    nci_instances_workflow_init($(".workflow"));
+  } else {
+    addHorizonLoadEvent(function() {
+      nci_instances_workflow_init($(".workflow"));
+    });
+  }
+</script>
