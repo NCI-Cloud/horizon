@@ -496,7 +496,7 @@ import logging
 # NB: We use "execfile()" here instead of "import" so that it's evaluated
 # in the current namespace context and so can access/modify any values
 # set above.
-NCI_DEFAULTS_PY = os.path.join(LOCAL_PATH, "nci", "settings_defaults.py")
+NCI_DEFAULTS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nci", "settings_defaults.py")
 if os.path.exists(NCI_DEFAULTS_PY):
     execfile(NCI_DEFAULTS_PY)
 else:
