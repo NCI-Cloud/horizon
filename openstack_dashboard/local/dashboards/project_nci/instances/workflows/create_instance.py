@@ -328,7 +328,7 @@ class SetNetworkAction(base_mod.SetNetworkAction):
                         raise forms.ValidationError(msg)
                 elif ip_type == "fl":
                     if not (primary_net_id and not self.net_is_ext[primary_net_id]):
-                        msg = _("A floating public IP address requires an internal network on the first NIC.")
+                        msg = _("A floating public IP address requires a non-external network on the first NIC.")
                         raise forms.ValidationError(msg)
                 else:
                     msg = _("Invalid public IP address selection.")
