@@ -228,6 +228,10 @@ class SetNetworkAction(base_mod.SetNetworkAction):
             LOG.debug("Excluding external networks")
             networks = filter(lambda x: not x.get("router:external", False), networks)
 
+        # TODO: Workaround until we can unshare the "internal" network.
+        if request.user.project_name not in ["admin", "z00"]:
+            networks = filter(lambda x: x.get("router:external", False) or not x.get("shared", False), networks)
+
         any_ext_nets = False
         self.net_is_ext = {}
         for n in networks:
