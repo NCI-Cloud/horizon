@@ -399,10 +399,15 @@ class BootstrapConfigAction(workflows.Action):
         regex=REPO_BRANCH_REGEX,
         help_text=_("The branch to checkout from the Puppet configuration repository."))
 
-    install_updates = forms.BooleanField(
+    install_updates = forms.ChoiceField(
         label=_("Install Updates"),
-        required=False,
-        initial=True,
+        required=True,
+        choices=[
+            ("reboot", _("Yes (reboot if required)")),
+            ("yes", _("Yes (don't reboot)")),
+            ("no", _("No")),
+        ],
+        initial="reboot",
         help_text=_("Whether to install system updates.  (Recommended)"))
 
     class Meta:
@@ -589,8 +594,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
         # If a branch name has been specified, then we need to load the
         # project's base configuration first so that we have all the info
         # needed to clone the repository inside the VM.
-        deploy_cfg = {}
-        if context.get("repo_branch"):
+        if context["repo_branch"]:
             try:
                 obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
             except Exception:
@@ -599,27 +603,46 @@ class NCILaunchInstance(base_mod.LaunchInstance):
                 return False
 
             try:
-                project_cfg = json.loads(obj.data)
+                boot_params = json.loads(obj.data)
             except Exception as e:
                 LOG.exception("Error parsing VL project config: %s" % e)
                 msg = _("VL project configuration is corrupt.")
                 messages.error(request, msg)
                 return False
-
-            # Assign the values that we need for deployment.
-            copy_keys = ("repo_path", "repo_key_private")
-            deploy_cfg.update([(k, v) for k, v in project_cfg.iteritems() if k in copy_keys])
+        else:
+            boot_params = {}
 
         # Now add the instance specific parameters.
-        deploy_cfg.update([(k, context[k]) for k in BootstrapConfig.contributes])
+        boot_params.update([(k, context[k]) for k in BootstrapConfig.contributes])
+
+        # And finally, convert them into the required cloud-config parameters.
+        cloud_cfg = {}
+        if boot_params["repo_branch"]:
+            cfg = cloud_cfg.setdefault("nci", {}).setdefault("clone_repo", {})
+            key_map = {
+                "branch": "repo_branch",
+                "path": "repo_path",
+                "key": "repo_key_private",
+            }
+            for k1, k2 in key_map.iteritems():
+                cfg[k1] = boot_params.get(k2)
+
+        if boot_params["puppet_action"]:
+            cfg = cloud_cfg.setdefault("nci", {}).setdefault("puppet", {})
+            cfg["action"] = boot_params["puppet_action"]
+
+        cloud_cfg["package_upgrade"] = (context["install_updates"] != "no")
+        cloud_cfg["package_reboot_if_required"] = (context["install_updates"] == "reboot")
 
         # Construct the "user data" to inject into the VM for "cloud-init".
         user_data = MIMEMultipart()
         try:
-            part = MIMEText(json.dumps(deploy_cfg), "nci-cloud-deploy")
+            # Note that JSON is also valid YAML:
+            #   http://yaml.org/spec/1.2/spec.html#id2759572
+            part = MIMEText(json.dumps(cloud_cfg), "cloud-config")
             user_data.attach(part)
         except Exception as e:
-            LOG.exception("Error serialising \"nci-cloud-deploy\" configuration: %s" % e)
+            LOG.exception("Error serialising userdata: %s" % e)
             msg = _("Failed to construct userdata for VM instance.")
             messages.error(request, msg)
             return False
