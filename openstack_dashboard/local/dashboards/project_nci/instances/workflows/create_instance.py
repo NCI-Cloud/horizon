@@ -44,6 +44,7 @@ from openstack_dashboard import api
 from openstack_dashboard.dashboards.project.instances.workflows import create_instance as base_mod
 
 from openstack_dashboard.local.dashboards.project_nci.vlconfig.constants import *
+from openstack_dashboard.local.dashboards.project_nci.vlconfig.ssh import SSHKeyStore
 from openstack_dashboard.local.nci import utils as nciutils
 
 
@@ -619,13 +620,17 @@ class NCILaunchInstance(base_mod.LaunchInstance):
         cloud_cfg = {}
         if boot_params["repo_branch"]:
             cfg = cloud_cfg.setdefault("nci", {}).setdefault("clone_repo", {})
-            key_map = {
-                "branch": "repo_branch",
-                "path": "repo_path",
-                "key": "repo_key_private",
-            }
-            for k1, k2 in key_map.iteritems():
-                cfg[k1] = boot_params.get(k2)
+            cfg["branch"] = boot_params["repo_branch"]
+            cfg["path"] = boot_params.get("repo_path", "")
+            try:
+                if "repo_key" in boot_params:
+                    key = SSHKeyStore(request).load(boot_params["repo_key"])
+                    cfg["key"] = key.get_private()
+            except Exception as e:
+                LOG.exception("Error loading SSH key: %s" % e)
+                msg = _("Failed to load deployment key.")
+                messages.error(request, msg)
+                return False
 
         if boot_params["puppet_action"]:
             cfg = cloud_cfg.setdefault("nci", {}).setdefault("puppet", {})

@@ -1,6 +1,6 @@
 # openstack_dashboard.local.dashboards.project_nci.vlconfig.forms
 #
-# Copyright (c) 2014, NCI, Australian National University.
+# Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,9 +16,11 @@
 #    under the License.
 #
 
+import datetime
 import json
 import logging
 #import pdb ## DEBUG
+import sys
 import uuid
 
 from django.utils.translation import ugettext_lazy as _
@@ -30,6 +32,7 @@ from horizon import messages
 from openstack_dashboard import api
 
 from .constants import *
+from .ssh import SSHKeyStore
 
 
 LOG = logging.getLogger(__name__)
@@ -51,18 +54,27 @@ class VLConfigForm(forms.SelfHandlingForm):
     repo_key_public = forms.CharField(
         widget=forms.Textarea(attrs={"readonly": True}),
         label=_("Public Deployment Key"),
-        required=False,
-        help_text=_("SSH key with read-only access to the Puppet configuration repository."))
+        required=False)
+
+    repo_key_fp = forms.CharField(
+        widget=forms.TextInput(attrs={"readonly": True}),
+        label=_("Deployment Key Fingerprint"),
+        required=False)
 
     repo_key_create = forms.BooleanField(
-        label=_("Generate Deployment Key Pair"),
+        label=_("Generate New Deployment Key"),
         required=False,
-        initial=False,
-        help_text=_("Generates a new SSH key pair for deploying the Puppet repository."))
+        initial=True,
+        help_text=_("Generates a new SSH key for deploying the Puppet repository."))
+
+    revision = forms.CharField(
+        widget=forms.HiddenInput(),
+        required=False)
 
     def __init__(self, request, *args, **kwargs):
         super(VLConfigForm, self).__init__(request, *args, **kwargs)
         self.saved_params = {}
+        self.key_store = SSHKeyStore(request)
 
         obj = None
         try:
@@ -70,7 +82,7 @@ class VLConfigForm(forms.SelfHandlingForm):
             if api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH):
                 LOG.debug("Loading project configuration")
                 obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
-        except Exception:
+        except:
             # NB: Can't use "self.api_error()" here since form not yet validated.
             exceptions.handle(request)
             msg = _("Failed to load configuration data.")
@@ -88,11 +100,8 @@ class VLConfigForm(forms.SelfHandlingForm):
             self.set_warning(msg)
             return
 
-        if not self.saved_params.get("repo_key_private"):
-            self.fields["repo_key_create"].initial = True
-
         if not self.saved_params:
-            if self.request.method == "GET":
+            if request.method == "GET":
                 msg = _("No existing project configuration found.")
                 self.set_warning(msg)
                 self.fields["repo_path"].initial = "p/%s/puppet.git" % request.user.project_name
@@ -100,56 +109,104 @@ class VLConfigForm(forms.SelfHandlingForm):
             return
 
         for k, v in self.saved_params.iteritems():
-            if k in self.fields:
+            if (k in self.fields) and not k.startswith("repo_key"):
                 self.fields[k].initial = v
+
+        if self.saved_params.get("repo_key"):
+            self.fields["repo_key_create"].initial = False
+
+            try:
+                key = self.key_store.load(self.saved_params["repo_key"])
+            except Exception as e:
+                # NB: Can't use "self.api_error()" here since form not yet validated.
+                LOG.exception("Error loading SSH key: %s" % e)
+                msg = _("Failed to load deployment key.")
+                self.set_warning(msg)
+                key = None
+
+            if key:
+                self.fields["repo_key_public"].initial = key.get_public()
+                self.fields["repo_key_fp"].initial = key.get_fingerprint()
+
+    def clean(self):
+        data = super(VLConfigForm, self).clean()
+
+        # Don't allow the form data to be saved if the revision stored in the
+        # form by the GET request doesn't match what we've just loaded while
+        # processing the POST request.
+        if data.get("revision", "") != self.saved_params.get("revision", ""):
+            if self.saved_params.get("revision"):
+                msg = _("Saved configuration has changed since form was loaded.")
+            else:
+                msg = _("Failed to retrieve existing configuration for update.")
+            raise forms.ValidationError(msg)
+
+        return data
 
     def handle(self, request, data):
         new_params = self.saved_params.copy()
-        new_params.update([(k, v) for k, v in data.iteritems() if not k.startswith("repo_key_")])
+        new_params.update([(k, v) for k, v in data.iteritems() if not k.startswith("repo_key")])
 
-        if data.get("repo_key_create", False):
-            LOG.debug("Generating new repo key pair")
-            tmp_key_name = "deploy-%s" % uuid.uuid4().hex
-            try:
-                # Use the Nova API to generate a new key pair and then delete
-                # it since we only need the ciphertext.
-                key = api.nova.keypair_create(request, tmp_key_name)
-                api.nova.keypair_delete(request, key.id)
-            except Exception:
-                exceptions.handle(request)
-                msg = _("Failed to generate key pair.")
-                self.api_error(msg)
-                return False
+        try:
+            # Make sure the container exists first.
+            if not api.swift.swift_container_exists(request, NCI_PVT_CONTAINER):
+                api.swift.swift_create_container(request, NCI_PVT_CONTAINER)
 
-            new_params["repo_key_private"] = key.private_key
-
-            # Strip any comments off the end.
-            new_params["repo_key_public"] = " ".join(key.public_key.split(" ")[:2])
-
-        if new_params != self.saved_params:
-            obj_data = json.dumps(new_params)
-            try:
-                LOG.debug("Saving project configuration")
-
-                # Make sure the container exists first.
-                if not api.swift.swift_container_exists(request, NCI_PVT_CONTAINER):
-                    api.swift.swift_create_container(request, NCI_PVT_CONTAINER)
-
+            if not api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, NCI_PVT_README_NAME):
                 msg = "**WARNING**  Don't delete, rename or modify this container or any objects herein."
                 api.swift.swift_api(request).put_object(NCI_PVT_CONTAINER,
                     NCI_PVT_README_NAME,
                     msg,
                     content_type="text/plain")
+        except:
+            exceptions.handle(request)
+            msg = _("Failed to save configuration.")
+            self.api_error(msg)
+            return False
 
-                api.swift.swift_api(request).put_object(NCI_PVT_CONTAINER,
-                    PROJECT_CONFIG_PATH,
-                    obj_data,
-                    content_type="application/json")
-            except Exception:
+        new_key = None
+        if data.get("repo_key_create", False):
+            LOG.debug("Generating new SSH key")
+            try:
+                new_key = self.key_store.generate()
+                new_params["repo_key"] = new_key.get_ref()
+            except Exception as e:
+                LOG.exception("Error generating SSH key: %s" % e)
+                msg = _("Failed to generate deployment key.")
+                self.api_error(msg)
+                return False
+
+        if new_params != self.saved_params:
+            new_params["revision"] = datetime.datetime.utcnow().isoformat()
+            obj_data = json.dumps(new_params)
+            try:
+                try:
+                    LOG.debug("Saving project configuration")
+                    api.swift.swift_api(request).put_object(NCI_PVT_CONTAINER,
+                        PROJECT_CONFIG_PATH,
+                        obj_data,
+                        content_type="application/json")
+                except:
+                    # Python 2 doesn't have exception chaining so we have to
+                    # save the original context to re-raise it below.
+                    saved_ex = sys.exc_info()
+                    try:
+                        if new_key:
+                            self.key_store.delete(new_key.get_ref())
+                    except Exception as e:
+                        LOG.exception("Error deleting new SSH key: %s" % e)
+                    raise saved_ex[0], saved_ex[1], saved_ex[2]
+            except:
                 exceptions.handle(request)
                 msg = _("Failed to save configuration.")
                 self.api_error(msg)
                 return False
+
+            try:
+                if new_key and self.saved_params.get("repo_key"):
+                    self.key_store.delete(self.saved_params["repo_key"])
+            except Exception as e:
+                LOG.exception("Error deleting old SSH key: %s" % e)
 
             self.saved_params = new_params
             messages.success(request, _("Configuration saved."))
