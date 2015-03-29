@@ -17,10 +17,12 @@
 #
 
 import binascii
+import logging
 import os.path
 #import pdb ## DEBUG
 
 from paramiko.rsakey import RSAKey
+from paramiko.ssh_exception import SSHException
 from StringIO import StringIO
 
 from django.conf import settings
@@ -28,6 +30,9 @@ from django.conf import settings
 from openstack_dashboard import api
 
 from .constants import NCI_PVT_CONTAINER
+
+
+LOG = logging.getLogger(__name__)
 
 
 class SSHKey(object):
@@ -101,8 +106,15 @@ class SSHKeyStore(object):
 
             path = os.path.join(path, ".ssh_key_store_secret")
 
-        with open(path) as fh:
-            return fh.readline().strip()
+        try:
+            with open(path) as fh:
+                secret = fh.readline().strip()
+                if not secret:
+                    raise ValueError("Secret is empty")
+                return secret
+        except (IOError, ValueError) as e:
+            LOG.exception("Error loading key store secret: %s" % e)
+            raise SSHException("SSH key store configuration fault.  Please report to help desk.")
 
 
 # vim:ts=4 et sw=4 sts=4:
