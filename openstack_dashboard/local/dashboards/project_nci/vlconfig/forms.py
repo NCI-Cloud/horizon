@@ -83,8 +83,8 @@ class VLConfigForm(forms.SelfHandlingForm):
                 LOG.debug("Loading project configuration")
                 obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
         except:
-            # NB: Can't use "self.api_error()" here since form not yet validated.
             exceptions.handle(request)
+            # NB: Can't use "self.api_error()" here since form not yet validated.
             msg = _("Failed to load configuration data.")
             self.set_warning(msg)
             return
@@ -93,9 +93,10 @@ class VLConfigForm(forms.SelfHandlingForm):
             if obj and obj.data:
                 LOG.debug("Parsing project configuration")
                 self.saved_params = json.loads(obj.data)
-        except Exception as e:
-            # NB: Can't use "self.api_error()" here since form not yet validated.
+        except ValueError as e:
             LOG.exception("Error parsing project configuration: %s" % e)
+            messages.error(request, str(e))
+            # NB: Can't use "self.api_error()" here since form not yet validated.
             msg = _("Configuration data is corrupt and cannot be loaded.")
             self.set_warning(msg)
             return
@@ -117,9 +118,9 @@ class VLConfigForm(forms.SelfHandlingForm):
 
             try:
                 key = self.key_store.load(self.saved_params["repo_key"])
-            except Exception as e:
+            except:
+                exceptions.handle(request)
                 # NB: Can't use "self.api_error()" here since form not yet validated.
-                LOG.exception("Error loading SSH key: %s" % e)
                 msg = _("Failed to load deployment key.")
                 self.set_warning(msg)
                 key = None
@@ -170,8 +171,8 @@ class VLConfigForm(forms.SelfHandlingForm):
             try:
                 new_key = self.key_store.generate()
                 new_params["repo_key"] = new_key.get_ref()
-            except Exception as e:
-                LOG.exception("Error generating SSH key: %s" % e)
+            except:
+                exceptions.handle(request)
                 msg = _("Failed to generate deployment key.")
                 self.api_error(msg)
                 return False
@@ -192,9 +193,12 @@ class VLConfigForm(forms.SelfHandlingForm):
                     saved_ex = sys.exc_info()
                     try:
                         if new_key:
+                            LOG.debug("Rolling back SSH key generation")
                             self.key_store.delete(new_key.get_ref())
-                    except Exception as e:
-                        LOG.exception("Error deleting new SSH key: %s" % e)
+                    except:
+                        exceptions.handle(request)
+                        msg = _("Failed to rollback new deployment key.")
+                        messages.warning(request, msg)
                     raise saved_ex[0], saved_ex[1], saved_ex[2]
             except:
                 exceptions.handle(request)
@@ -204,9 +208,12 @@ class VLConfigForm(forms.SelfHandlingForm):
 
             try:
                 if new_key and self.saved_params.get("repo_key"):
+                    LOG.debug("Removing previous SSH key")
                     self.key_store.delete(self.saved_params["repo_key"])
-            except Exception as e:
-                LOG.exception("Error deleting old SSH key: %s" % e)
+            except:
+                exceptions.handle(request)
+                msg = _("Failed to remove old deployment key.")
+                messages.warning(request, msg)
 
             self.saved_params = new_params
             messages.success(request, _("Configuration saved."))

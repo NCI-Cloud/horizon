@@ -211,8 +211,9 @@ class SetNetworkAction(base_mod.SetNetworkAction):
                     # No fixed IP config found for this tenant so default to
                     # allowing use of the network's global IP allocation pool.
                     self.fixed_ips_pool = True
-            except Exception as e:
+            except netaddr.AddrFormatError as e:
                 LOG.exception("Error parsing fixed public IP list: %s" % e)
+                messages.error(request, str(e))
                 msg = _("Failed to load fixed public IP configuration.")
                 messages.warning(request, msg)
                 self.fixed_ips = netaddr.IPSet()
@@ -233,9 +234,10 @@ class SetNetworkAction(base_mod.SetNetworkAction):
         networks = []
         try:
             networks = api.neutron.network_list_for_tenant(request, request.user.project_id)
-        except Exception:
-            msg = _("Unable to retrieve networks.")
-            exceptions.handle(request, msg)
+        except:
+            exceptions.handle(request)
+            msg = _("Unable to retrieve available networks.")
+            messages.warning(request, msg)
 
         if not self.fixed_ips_enabled:
             LOG.debug("Excluding external networks")
@@ -293,8 +295,8 @@ class SetNetworkAction(base_mod.SetNetworkAction):
 
             # Sort the list by IP address.
             choices = sorted(choices, key=lambda x: netaddr.IPAddress(x[1].split()[0]))
-        except Exception as e:
-            LOG.exception("Error building public IP list: %s" % e)
+        except:
+            exceptions.handle(request)
             msg = _("Failed to populate public IP list.")
             messages.warning(request, msg)
             choices = []
@@ -425,15 +427,15 @@ class BootstrapConfigAction(workflows.Action):
         is_vl = False
         try:
             is_vl = api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
-        except Exception:
+        except:
             exceptions.handle(request)
 
         if is_vl:
             obj = None
             try:
                 obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
-            except Exception as e:
-                LOG.exception("Error loading VL project config: %s" % e)
+            except:
+                exceptions.handle(request)
                 msg = _("VL project configuration not found.")
                 messages.warning(request, msg)
 
@@ -441,8 +443,9 @@ class BootstrapConfigAction(workflows.Action):
                 project_cfg = None
                 try:
                     project_cfg = json.loads(obj.data)
-                except Exception as e:
-                    LOG.exception("Error parsing VL project config: %s" % e)
+                except ValueError as e:
+                    LOG.exception("Error parsing project configuration: %s" % e)
+                    messages.error(request, str(e))
                     msg = _("VL project configuration is corrupt.")
                     messages.warning(request, msg)
 
@@ -546,8 +549,8 @@ def server_create_hook_func(request, context):
                                 srv = api.nova.server_get(request, srv.id)
                                 failed = False
                                 break
-                except Exception as e:
-                    LOG.exception("Error assigning floating IP: %s" % e)
+                except:
+                    exceptions.handle(request)
 
             if failed:
                 msg = _("Failed to associate floating IP with new instance.")
@@ -598,15 +601,17 @@ class NCILaunchInstance(base_mod.LaunchInstance):
         if context["repo_branch"]:
             try:
                 obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
-            except Exception:
+            except:
+                exceptions.handle(request)
                 msg = _("VL project configuration not found.")
-                exceptions.handle(request, msg)
+                messages.error(request, msg)
                 return False
 
             try:
                 boot_params = json.loads(obj.data)
-            except Exception as e:
-                LOG.exception("Error parsing VL project config: %s" % e)
+            except ValueError as e:
+                LOG.exception("Error parsing project configuration: %s" % e)
+                messages.error(request, str(e))
                 msg = _("VL project configuration is corrupt.")
                 messages.error(request, msg)
                 return False
@@ -626,8 +631,8 @@ class NCILaunchInstance(base_mod.LaunchInstance):
                 if "repo_key" in boot_params:
                     key = SSHKeyStore(request).load(boot_params["repo_key"])
                     cfg["key"] = key.get_private()
-            except Exception as e:
-                LOG.exception("Error loading SSH key: %s" % e)
+            except:
+                exceptions.handle(request)
                 msg = _("Failed to load deployment key.")
                 messages.error(request, msg)
                 return False
@@ -646,8 +651,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             #   http://yaml.org/spec/1.2/spec.html#id2759572
             part = MIMEText(json.dumps(cloud_cfg), "cloud-config")
             user_data.attach(part)
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             LOG.exception("Error serialising userdata: %s" % e)
+            messages.error(request, str(e))
             msg = _("Failed to construct userdata for VM instance.")
             messages.error(request, msg)
             return False
