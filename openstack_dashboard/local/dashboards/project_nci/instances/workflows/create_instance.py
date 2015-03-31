@@ -426,14 +426,15 @@ class BootstrapConfigAction(workflows.Action):
         # change the Puppet action first.
         is_vl = False
         try:
-            is_vl = api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
+            container = nci_private_container_name(request)
+            is_vl = api.swift.swift_object_exists(request, container, PROJECT_CONFIG_PATH)
         except:
             exceptions.handle(request)
 
         if is_vl:
             obj = None
             try:
-                obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
+                obj = api.swift.swift_get_object(request, container, PROJECT_CONFIG_PATH)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -600,7 +601,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
         # needed to clone the repository inside the VM.
         if context["repo_branch"]:
             try:
-                obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
+                obj = api.swift.swift_get_object(request,
+                    nci_private_container_name(request),
+                    PROJECT_CONFIG_PATH)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
