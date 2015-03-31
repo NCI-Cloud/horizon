@@ -79,9 +79,10 @@ class VLConfigForm(forms.SelfHandlingForm):
         obj = None
         try:
             LOG.debug("Checking if project configuration exists")
-            if api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH):
+            container = nci_private_container_name(request)
+            if api.swift.swift_object_exists(request, container, PROJECT_CONFIG_PATH):
                 LOG.debug("Loading project configuration")
-                obj = api.swift.swift_get_object(request, NCI_PVT_CONTAINER, PROJECT_CONFIG_PATH)
+                obj = api.swift.swift_get_object(request, container, PROJECT_CONFIG_PATH)
         except:
             exceptions.handle(request)
             # NB: Can't use "self.api_error()" here since form not yet validated.
@@ -150,12 +151,13 @@ class VLConfigForm(forms.SelfHandlingForm):
 
         try:
             # Make sure the container exists first.
-            if not api.swift.swift_container_exists(request, NCI_PVT_CONTAINER):
-                api.swift.swift_create_container(request, NCI_PVT_CONTAINER)
+            container = nci_private_container_name(request)
+            if not api.swift.swift_container_exists(request, container):
+                api.swift.swift_create_container(request, container)
 
-            if not api.swift.swift_object_exists(request, NCI_PVT_CONTAINER, NCI_PVT_README_NAME):
+            if not api.swift.swift_object_exists(request, container, NCI_PVT_README_NAME):
                 msg = "**WARNING**  Don't delete, rename or modify this container or any objects herein."
-                api.swift.swift_api(request).put_object(NCI_PVT_CONTAINER,
+                api.swift.swift_api(request).put_object(container,
                     NCI_PVT_README_NAME,
                     msg,
                     content_type="text/plain")
@@ -183,7 +185,8 @@ class VLConfigForm(forms.SelfHandlingForm):
             try:
                 try:
                     LOG.debug("Saving project configuration")
-                    api.swift.swift_api(request).put_object(NCI_PVT_CONTAINER,
+                    container = nci_private_container_name(request)
+                    api.swift.swift_api(request).put_object(container,
                         PROJECT_CONFIG_PATH,
                         obj_data,
                         content_type="application/json")

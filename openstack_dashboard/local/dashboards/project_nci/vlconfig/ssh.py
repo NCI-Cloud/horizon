@@ -29,7 +29,7 @@ from django.conf import settings
 
 from openstack_dashboard import api
 
-from .constants import NCI_PVT_CONTAINER
+from .constants import *
 
 
 LOG = logging.getLogger(__name__)
@@ -74,7 +74,8 @@ class SSHKeyStore(object):
         # TODO: Switch to using Barbican for key storage instead when it's
         # released.
         path = "ssh-key/%s" % key.get_fingerprint("")
-        api.swift.swift_api(self._request).put_object(NCI_PVT_CONTAINER,
+        container = nci_private_container_name(self._request)
+        api.swift.swift_api(self._request).put_object(container,
             path,
             key.get_private(self.__secret()),
             content_type="text/plain")
@@ -85,7 +86,7 @@ class SSHKeyStore(object):
     def load(self, ref):
         """Loads an existing key from the key store."""
         obj = api.swift.swift_get_object(self._request,
-            NCI_PVT_CONTAINER,
+            nci_private_container_name(self._request),
             ref)
         raw_key = RSAKey.from_private_key(StringIO(obj.data), self.__secret())
         return SSHKey(raw_key, self._request, ref)
@@ -93,7 +94,8 @@ class SSHKeyStore(object):
     def delete(self, ref):
         """Deletes the given key from the key store."""
         assert ref.startswith("ssh-key/")
-        api.swift.swift_delete_object(self._request, NCI_PVT_CONTAINER, ref)
+        container = nci_private_container_name(self._request)
+        api.swift.swift_delete_object(self._request, container, ref)
 
     @staticmethod
     def __secret():

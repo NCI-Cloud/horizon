@@ -1,6 +1,6 @@
 # openstack_dashboard.local.dashboards.project_nci.vlconfig.constants
 #
-# Copyright (c) 2014, NCI, Australian National University.
+# Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,8 +22,13 @@ REPO_PATH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*\.git$"
 REPO_BRANCH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*$"
 
 # Swift paths
-NCI_PVT_CONTAINER = "nci-private"
+NCI_PVT_CONTAINER_PREFIX = "nci-private-"
 NCI_PVT_README_NAME = "README"
 PROJECT_CONFIG_PATH = "project-config"
+
+
+def nci_private_container_name(request):
+    return NCI_PVT_CONTAINER_PREFIX + request.user.project_id
+
 
 # vim:ts=4 et sw=4 sts=4:
