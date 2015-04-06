@@ -1,6 +1,6 @@
 # openstack_dashboard.local.nci.customisation
 #
-# Copyright (c) 2014, NCI, Australian National University.
+# Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -67,6 +67,14 @@ def replace_panels(dash_slug, panels):
             # When the panel module is imported it registers its panel class
             # with the dashboard.
             import_module(mod_path)
+
+
+admin_panels = [
+    ("projects", "openstack_dashboard.local.dashboards.admin_nci.projects.panel"),
+    ("users", "openstack_dashboard.local.dashboards.admin_nci.users.panel"),
+]
+
+replace_panels("admin", admin_panels)
 
 
 project_panels = [
