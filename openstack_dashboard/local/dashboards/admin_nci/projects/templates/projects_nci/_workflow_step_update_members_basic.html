@@ -66,11 +66,11 @@
 <script src="{{ STATIC_URL }}admin_nci/js/projects_workflow.js" type="text/javascript" charset="utf-8"></script>
 
 <script>
-  if (typeof horizon.membership !== 'undefined') {
-    horizon.membership.workflow_init($(".workflow"), "{{ step.slug }}", "{{ step.get_id }}");
+  if (typeof horizon.nci_project_membership !== 'undefined') {
+    horizon.nci_project_membership.workflow_init($(".workflow"), "{{ step.slug }}", "{{ step.get_id }}");
   } else {
     addHorizonLoadEvent(function() {
-      horizon.membership.workflow_init($(".workflow"), "{{ step.slug }}", "{{ step.get_id }}");
+      horizon.nci_project_membership.workflow_init($(".workflow"), "{{ step.slug }}", "{{ step.get_id }}");
     });
   }
 </script>
