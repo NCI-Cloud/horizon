@@ -70,6 +70,10 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
 
             parts = image.name.split("-")
             if parts[0] == "vl":
+                if not image.is_public:
+                    LOG.debug("Ignoring non-public VL image: {0}".format(image.name))
+                    continue
+
                 # VL images have the following name format:
                 #   vl-<tag_base>[-<tag_variant>-...]-<timestamp>
                 if len(parts) < 3:
