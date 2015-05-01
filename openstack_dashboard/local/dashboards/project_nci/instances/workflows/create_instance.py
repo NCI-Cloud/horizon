@@ -17,9 +17,11 @@
 #
 
 import copy
+import itertools
 import json
 import logging
 import netaddr
+import operator
 import os.path
 #import pdb ## DEBUG
 import re
@@ -71,7 +73,7 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
                 # VL images have the following name format:
                 #   vl-<tag_base>[-<tag_variant>-...]-<timestamp>
                 if len(parts) < 3:
-                    LOG.warning("Invalid VL image name format: %s" % image.name)
+                    LOG.warning("Invalid VL image name format: {0}".format(image.name))
                     continue
 
                 tag = "-".join(parts[1:-1])
@@ -79,7 +81,7 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
                 if re.match(r"2[0-9]{7}", parts[-1]):
                     image._vl_ts = parts[-1]
                 else:
-                    LOG.warning("Invalid or missing timestamp in VL image name: %s" % image.name)
+                    LOG.warning("Invalid or missing timestamp in VL image name: {0}".format(image.name))
                     continue
 
                 if (tag not in self.vl_tags) or (image._vl_ts > self.vl_tags[tag]._vl_ts):
@@ -106,14 +108,14 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
                 variant = ""
 
             if base:
-                title += " %s" % base
+                title += " " + base
 
             if variant:
-                title += " %s" % variant
+                title += " " + variant
 
             image = copy.copy(self.vl_tags[tag])
             image._real_id = image.id
-            image.id = "vltag:%s" % tag
+            image.id = "vltag:" + tag
             image.name = title
             self.vl_tags[tag] = image
 
@@ -183,12 +185,44 @@ class SetAccessControls(base_mod.SetAccessControls):
     action_class = SetAccessControlsAction
 
 
-class SetNetworkAction(base_mod.SetNetworkAction):
-    public_ip = forms.ChoiceField(
-        label=_("Public IP Address"),
-        required=False,
-        help_text=_("Public IP address to associate with the instance."))
+class FixedIPMultiWidget(forms.MultiWidget):
+    def __init__(self, choices, attrs=None):
+        sub_widgets = (
+            forms.Select(choices=choices, attrs=attrs),
+            forms.TextInput(attrs=attrs),
+        )
+        super(FixedIPMultiWidget, self).__init__(sub_widgets, attrs)
 
+    def has_choice(self, value):
+        for x in self.widgets[0].choices:
+            if isinstance(x[1], (list, tuple)):
+                for y in x[1]:
+                    if y[0] == value:
+                        return True
+            elif x[0] == value:
+                return True
+
+        return False
+
+    def decompress(self, value):
+        if value is not None:
+            if self.has_choice(value):
+                return [value, None]
+            else:
+                return ["manual", value]
+        else:
+            return [None, None]
+
+    def value_from_datadict(self, data, files, name):
+        v = super(FixedIPMultiWidget, self).value_from_datadict(data, files, name)
+        if v[0] == "manual":
+            return v[1].strip()
+        else:
+            return v[0]
+
+
+# NB: We aren't subclassing the upstream implementation of this action.
+class SetNetworkAction(workflows.Action):
     Meta = nciutils.subclass_meta_type(base_mod.SetNetworkAction)
 
     @staticmethod
@@ -197,40 +231,127 @@ class SetNetworkAction(base_mod.SetNetworkAction):
             or request.user.has_perms([settings.NCI_EXTERNAL_NET_PERM]))
 
     def __init__(self, request, context, *args, **kwargs):
-        self.fixed_ips = netaddr.IPSet()
-        self.fixed_ips_pool = False
+        super(SetNetworkAction, self).__init__(request, context, *args, **kwargs)
+
+        # If the user has access to the external network then retrieve any
+        # fixed public IP allocations defined for this tenant.
+        all_fixed_pub_ips = netaddr.IPSet()
+        self.fixed_pub_ips_pool = False
         if self.user_has_ext_net_priv(request):
             try:
                 if request.user.project_name in settings.NCI_FIXED_PUBLIC_IPS:
                     for cidr in settings.NCI_FIXED_PUBLIC_IPS[request.user.project_name]:
                         if cidr == "pool":
-                            self.fixed_ips_pool = True
+                            self.fixed_pub_ips_pool = True
                         else:
-                            self.fixed_ips.update(netaddr.IPNetwork(cidr))
-                else:
-                    # No fixed IP config found for this tenant so default to
-                    # allowing use of the network's global IP allocation pool.
-                    self.fixed_ips_pool = True
-            except netaddr.AddrFormatError as e:
-                LOG.exception("Error parsing fixed public IP list: %s" % e)
+                            all_fixed_pub_ips.add(netaddr.IPNetwork(cidr))
+                elif request.user.project_name == "admin":
+                    self.fixed_pub_ips_pool = True
+            except (netaddr.AddrFormatError, ValueError) as e:
+                LOG.exception("Error parsing fixed public IP list: {0}".format(e))
                 messages.error(request, str(e))
                 msg = _("Failed to load fixed public IP configuration.")
                 messages.warning(request, msg)
-                self.fixed_ips = netaddr.IPSet()
-                self.fixed_ips_pool = False
+                all_fixed_pub_ips = netaddr.IPSet()
+                self.fixed_pub_ips_pool = False
 
-        self.fixed_ips_enabled = (self.fixed_ips or self.fixed_ips_pool)
+        self.fixed_pub_ips_enabled = (bool(all_fixed_pub_ips) or self.fixed_pub_ips_pool)
 
-        super(SetNetworkAction, self).__init__(request, context, *args, **kwargs)
+        # Build the list of network choices.
+        networks_list = self.get_networks(request)
+        self.networks = dict([(x.id, x) for x in networks_list])
 
-    # We're overriding the base class method here so that we can:
-    # + Filter out external network(s) if no fixed IPs are allocated.
-    # + Identify all network types for validation later on.
-    # + Retain the selected network order when redrawing form on POST.
-    #
-    # We could do this after calling the base class method but that would be
-    # inefficient because we'd have to fetch each network again.
-    def populate_network_choices(self, request, context):
+        network_choices = [(x.id, x.name) for x in sorted(networks_list, key=operator.attrgetter('name'))]
+        network_choices.insert(0, ("", "-- Unassigned --"))
+
+        # Build the fixed and floating IP choice lists.
+        self.pub_ips = self.get_public_ips(request, all_fixed_pub_ips)
+
+        fixed_ip_choices = [
+            ("auto", "Automatic"),
+            ("manual", "Manual"),
+        ]
+
+        if self.fixed_pub_ips_enabled:
+            ext_fixed_ip_choices = [(str(x), str(x)) for x in self.pub_ips["fixed"]]
+            if self.fixed_pub_ips_pool:
+                ext_fixed_ip_choices.append(["ext_pool", "Global Allocation Pool"])
+
+            grp_title = "External"
+            if not ext_fixed_ip_choices:
+                grp_title += " (none available)"
+
+            fixed_ip_choices.append((grp_title, ext_fixed_ip_choices))
+        else:
+            ext_fixed_ip_choices = []
+
+        floating_ip_choices = [(x.id, x.ip) for x in sorted(self.pub_ips["float"].itervalues(), key=lambda x: netaddr.IPAddress(x.ip))]
+        floating_ip_choices.insert(0, ("", "-- None --"))
+
+        # Create the form fields for each network interface.
+        self.intf_limit = settings.NCI_VM_NETWORK_INTF_LIMIT
+        if not settings.NCI_DUPLICATE_VM_NETWORK_INTF:
+            self.intf_limit = max(1, min(self.intf_limit, len(networks_list)))
+
+        for i in range(0, self.intf_limit):
+            self.fields["eth{0:d}_network".format(i)] = forms.ChoiceField(
+                label=_("Network"),
+                required=(i == 0),
+                choices=network_choices,
+                initial="",
+                help_text=_("The network that this interface should be attached to."))
+
+            self.fields["eth{0:d}_fixed_ip".format(i)] = forms.CharField(
+                widget=FixedIPMultiWidget(fixed_ip_choices),
+                label=_("Fixed IP"),
+                required=True,
+                initial="auto",
+                help_text=_("The fixed IP address to assign to this interface."))
+
+            self.fields["eth{0:d}_floating_ip".format(i)] = forms.ChoiceField(
+                label=_("Floating Public IP"),
+                required=False,
+                choices=floating_ip_choices,
+                initial="",
+                help_text=_("A floating IP address to associate with this interface."))
+
+        # Select reasonable defaults if there is an obvious choice.  We only
+        # consider external networks as an option if there aren't any floating
+        # IPs available.
+        external_net_ids = set([x for x, y in self.networks.iteritems() if y.get("router:external", False)])
+        private_net_ids = set(self.networks.keys()) - external_net_ids
+
+        default_priv_net = None
+        if len(private_net_ids) == 1:
+            default_priv_net = iter(private_net_ids).next()
+        elif private_net_ids:
+            # As a convention, when we setup a new tenant we create a network
+            # with the same name as the tenant.
+            search = [request.user.project_name]
+            if request.user.project_name in ["admin", "z00"]:
+                search.append("internal")
+            matches = [x for x in private_net_ids if self.networks[x].name in search]
+            if len(matches) == 1:
+                default_priv_net = matches[0]
+
+        if len(floating_ip_choices) > 1:
+            if default_priv_net:
+                self.fields["eth0_network"].initial = default_priv_net
+                self.fields["eth0_floating_ip"].initial = floating_ip_choices[1][0]
+        elif ext_fixed_ip_choices:
+            if len(external_net_ids) == 1:
+                self.fields["eth0_network"].initial = iter(external_net_ids).next()
+                self.fields["eth0_fixed_ip"].initial = ext_fixed_ip_choices[0][0]
+                if default_priv_net:
+                    assert self.intf_limit > 1
+                    self.fields["eth1_network"].initial = default_priv_net
+        elif default_priv_net:
+            self.fields["eth0_network"].initial = default_priv_net
+
+        # A list of external network IDs is needed for the client side code.
+        self.external_nets = ";".join(external_net_ids)
+
+    def get_networks(self, request):
         networks = []
         try:
             networks = api.neutron.network_list_for_tenant(request, request.user.project_id)
@@ -239,148 +360,263 @@ class SetNetworkAction(base_mod.SetNetworkAction):
             msg = _("Unable to retrieve available networks.")
             messages.warning(request, msg)
 
-        if not self.fixed_ips_enabled:
+        if not self.fixed_pub_ips_enabled:
             LOG.debug("Excluding external networks")
             networks = filter(lambda x: not x.get("router:external", False), networks)
 
         # TODO: Workaround until we can unshare the "internal" network.
         if request.user.project_name not in ["admin", "z00"]:
-            networks = filter(lambda x: x.get("router:external", False) or not x.get("shared", False), networks)
+            networks = filter(lambda x: x.get("router:external", False) or not x.shared, networks)
 
         any_ext_nets = False
-        self.net_is_ext = {}
-        for n in networks:
-            n.set_id_as_name_if_empty()
-            self.net_is_ext[n.id] = n.get("router:external", False)
-            any_ext_nets = any_ext_nets or self.net_is_ext[n.id]
+        for net in networks:
+            # Make sure the "name" attribute is defined.
+            net.set_id_as_name_if_empty()
+            any_ext_nets = any_ext_nets or net.get("router:external", False)
 
-        if self.fixed_ips_enabled and not any_ext_nets:
-            LOG.debug("No external networks found - disabling fixed external IPs")
-            self.fixed_ips_enabled = False
+        if self.fixed_pub_ips_enabled and not any_ext_nets:
+            LOG.debug("No external networks found - disabling fixed public IPs")
+            self.fixed_pub_ips_enabled = False
 
-        if request.method == "POST":
-            selected = self.data.getlist("network")
-            networks = sorted(networks, key=lambda x: selected.index(x.id) if x.id in selected else len(selected))
+        return networks
 
-        return [(network.id, network.name) for network in networks]
-
-    def populate_public_ip_choices(self, request, context):
-        choices = []
+    def get_public_ips(self, request, all_fixed_pub_ips):
+        ips = {}
 
         try:
-            # Add any unassigned floating IPs to the list of choices.
+            # Select any unassigned floating IPs.
             floats = api.network.tenant_floating_ip_list(request)
-            label = "%s (Floating)" if self.fixed_ips_enabled else "%s"
-            choices.extend([("fl:%s" % x.id, label % x.ip) for x in floats if not x.port_id])
+            ips["float"] = dict([(x.id, x) for x in floats if not x.port_id])
 
-            if self.fixed_ips_enabled and self.fixed_ips:
+            if self.fixed_pub_ips_enabled and all_fixed_pub_ips:
                 # Take note of all floating IPs (including assigned) since they
                 # can't be used as a fixed IP given that a port already exists.
                 used_ips = [x.ip for x in floats]
 
                 # Locate any fixed IPs already assigned to an external network
                 # port so that we can exclude them from the list.
-                for net_id in [x for x, y in self.net_is_ext.iteritems() if y]:
-                    LOG.debug("Getting port list for network: %s" % net_id)
-                    ports = api.neutron.port_list(request, tenant_id=request.user.project_id, network_id=net_id)
+                for net_id, net in self.networks.iteritems():
+                    if not net.get("router:external", False):
+                        continue
+
+                    LOG.debug("Getting all ports for network: {0}".format(net_id))
+                    ports = api.neutron.port_list(request,
+                        tenant_id=request.user.project_id,
+                        network_id=net_id)
                     for port in ports:
-                        for fixed_ip in port.fixed_ips:
-                            if fixed_ip.get("ip_address"):
-                                used_ips.append(fixed_ip["ip_address"])
+                        for fip in port.fixed_ips:
+                            if fip.get("ip_address"):
+                                used_ips.append(fip["ip_address"])
 
-                # Add fixed IPs allocated to the tenant that aren't in use.
-                used_ips = netaddr.IPSet(used_ips)
-                avail_ips = self.fixed_ips - used_ips
-                choices.extend([("fx:%s" % x, "%s (Fixed)" % x) for x in avail_ips])
-
-            # Sort the list by IP address.
-            choices = sorted(choices, key=lambda x: netaddr.IPAddress(x[1].split()[0]))
+                # Select fixed IPs allocated to the tenant that aren't in use.
+                ips["fixed"] = all_fixed_pub_ips - netaddr.IPSet(used_ips)
+            else:
+                ips["fixed"] = []
         except:
             exceptions.handle(request)
-            msg = _("Failed to populate public IP list.")
+            msg = _("Failed to determine available public IPs.")
             messages.warning(request, msg)
-            choices = []
+            ips["float"] = {}
+            ips["fixed"] = []
 
-        if self.fixed_ips_enabled and self.fixed_ips_pool:
-            choices.append(("pool", "Global Allocation Pool (Fixed)"))
-
-        choices.insert(0, ("", "None"))
-        return choices
+        return ips
 
     def clean(self):
         data = super(SetNetworkAction, self).clean()
 
-        # To keep things simple (including the UI), we always associate the
-        # selected public IP address (if any) to the first NIC.
-        primary_net_id = None
-        for net_id in data.get("network", []):
-            if net_id not in self.net_is_ext:
-                msg = _("Unknown network selected.")
-                raise forms.ValidationError(msg)
+        nics = []
+        used_ips = {"_float_": set()}
+        try:
+            for i in range(0, self.intf_limit):
+                nic = {}
+                field_id = "eth{0:d}_network".format(i)
+                net_id = data.get(field_id)
+                if net_id:
+                    used_ips.setdefault(net_id, set())
+                    nic["network_id"] = net_id
 
-            if not primary_net_id:
-                primary_net_id = net_id
-            elif self.fixed_ips_enabled and self.net_is_ext[net_id]:
-                # If allocated fixed IPs are enabled, then we can't allow an
-                # external network other than on the first NIC since it
-                # would end up with a random public IP address otherwise.
-                msg = _("An external network can only be assigned to the first NIC.")
-                raise forms.ValidationError(msg)
+                    if i != len(nics):
+                        msg = _("Network interfaces must be assigned consecutively.")
+                        self._errors[field_id] = self.error_class([msg])
+                    elif (not settings.NCI_DUPLICATE_VM_NETWORK_INTF) and (net_id in [n["network_id"] for n in nics]):
+                        msg = _("Network is assigned to another interface.")
+                        self._errors[field_id] = self.error_class([msg])
 
-        if data.get("public_ip"):
-            if self.fixed_ips_pool and (data["public_ip"] == "pool"):
-                if not (primary_net_id and self.net_is_ext[primary_net_id]):
-                    msg = _("A fixed public IP address requires an external network on the first NIC.")
-                    raise forms.ValidationError(msg)
+                    # Field level validation will have already checked that the
+                    # network ID exists by virtue of being a valid choice.
+                    assert net_id in self.networks
+                    external = self.networks[net_id].get("router:external", False)
                 else:
-                    del data["public_ip"]
-            else:
-                pair = data["public_ip"].split(":", 1)
-                if (len(pair) != 2) or not pair[1]:
-                    msg = _("Invalid public IP address selection.")
-                    raise forms.ValidationError(msg)
+                    external = False
 
-                ip_type = pair[0]
-                if ip_type == "fx":
-                    if not (primary_net_id and self.net_is_ext[primary_net_id]):
-                        msg = _("A fixed public IP address requires an external network on the first NIC.")
-                        raise forms.ValidationError(msg)
-                elif ip_type == "fl":
-                    if not (primary_net_id and not self.net_is_ext[primary_net_id]):
-                        msg = _("A floating public IP address requires a non-external network on the first NIC.")
-                        raise forms.ValidationError(msg)
+                fixed_subnet_id = None
+                field_id = "eth{0:d}_fixed_ip".format(i)
+                fixed_ip = data.get(field_id)
+                if not fixed_ip:
+                    # Value could only be undefined if field level validation
+                    # failed since "required=True" for this field.
+                    assert self._errors.get(field_id)
+                elif fixed_ip == "auto":
+                    if external:
+                        msg = _("Selected option is not valid on this network.")
+                        self._errors[field_id] = self.error_class([msg])
+                elif not net_id:
+                    msg = _("No network selected.")
+                    self._errors[field_id] = self.error_class([msg])
+                elif fixed_ip == "ext_pool":
+                    if external:
+                        # Choice won't be available unless global allocation pool
+                        # is enabled.
+                        assert self.fixed_pub_ips_pool
+                    else:
+                        msg = _("Selected option is not available on this network.")
+                        self._errors[field_id] = self.error_class([msg])
                 else:
-                    msg = _("Invalid public IP address selection.")
-                    raise forms.ValidationError(msg)
-        elif self.fixed_ips_enabled and primary_net_id and self.net_is_ext[primary_net_id]:
-            msg = _("Select a fixed public IP address for the external network.")
+                    try:
+                        fixed_ip = netaddr.IPAddress(fixed_ip)
+                    except (netaddr.AddrFormatError, ValueError) as e:
+                        msg = _("Not a valid IP address format.")
+                        self._errors[field_id] = self.error_class([msg])
+                    else:
+                        if external:
+                            assert self.fixed_pub_ips_enabled
+                            if fixed_ip not in self.pub_ips["fixed"]:
+                                msg = _("\"{0}\" is not available on this network.".format(fixed_ip))
+                                self._errors[field_id] = self.error_class([msg])
+                            elif fixed_ip in used_ips[net_id]:
+                                msg = _("IP address is assigned to another interface.")
+                                self._errors[field_id] = self.error_class([msg])
+                            else:
+                                nic["fixed_ip"] = fixed_ip
+                                used_ips[net_id].add(fixed_ip)
+                        else:
+                            # Verify that there is a subnet for the selected network
+                            # which contains the fixed IP address.
+                            subnet_cidr = None
+                            for subnet in self.networks[net_id].subnets:
+                                subnet_cidr = netaddr.IPNetwork(subnet.cidr)
+                                if fixed_ip in subnet_cidr:
+                                    break
+                                else:
+                                    subnet_cidr = None
+
+                            if not subnet_cidr:
+                                msg = _("IP address must be in a subnet range for the selected network.")
+                                self._errors[field_id] = self.error_class([msg])
+                            elif fixed_ip == subnet_cidr.network:
+                                msg = _("Network address is reserved.")
+                                self._errors[field_id] = self.error_class([msg])
+                            elif fixed_ip == subnet_cidr.broadcast:
+                                msg = _("Broadcast address is reserved.")
+                                self._errors[field_id] = self.error_class([msg])
+                            elif subnet.get("gateway_ip") and (fixed_ip == netaddr.IPAddress(subnet.gateway_ip)):
+                                msg = _("IP address is reserved for the subnet gateway.")
+                                self._errors[field_id] = self.error_class([msg])
+                            else:
+                                fixed_subnet_id = subnet.id
+
+                                # Is the IP address already assigned to a port on
+                                # this network?
+                                LOG.debug("Getting all ports for network: {0}".format(net_id))
+                                ports = api.neutron.port_list(self.request,
+                                    tenant_id=self.request.user.project_id,
+                                    network_id=net_id)
+                                found = False
+                                for port in ports:
+                                    for fip in port.fixed_ips:
+                                        if fip.get("ip_address") and (fixed_ip == netaddr.IPAddress(fip["ip_address"])):
+                                            found = True
+                                            break
+
+                                if found:
+                                    msg = _("IP address is already in use.")
+                                    self._errors[field_id] = self.error_class([msg])
+                                elif fixed_ip in used_ips[net_id]:
+                                    msg = _("IP address is assigned to another interface.")
+                                    self._errors[field_id] = self.error_class([msg])
+                                else:
+                                    nic["fixed_ip"] = fixed_ip
+                                    used_ips[net_id].add(fixed_ip)
+
+                field_id = "eth{0:d}_floating_ip".format(i)
+                floating_ip = data.get(field_id)
+                if floating_ip:
+                    assert floating_ip in self.pub_ips["float"]
+                    if not net_id:
+                        msg = _("No network selected.")
+                        self._errors[field_id] = self.error_class([msg])
+                    elif external:
+                        msg = _("Floating IPs cannot be used on an external network.")
+                        self._errors[field_id] = self.error_class([msg])
+                    elif floating_ip in used_ips["_float_"]:
+                        msg = _("IP address is assigned to another interface.")
+                        self._errors[field_id] = self.error_class([msg])
+                    else:
+                        float_net_id = self.pub_ips["float"][floating_ip].floating_network_id
+                        LOG.debug("Looking for a route between the networks {0} and {1}".format(net_id, float_net_id))
+                        ports = api.neutron.port_list(self.request,
+                            network_id=net_id,
+                            device_owner="network:router_interface")
+                        found = False
+                        for port in ports:
+                            if fixed_subnet_id and (fixed_subnet_id not in [x.get("subnet_id") for x in port.fixed_ips]):
+                                LOG.debug("Ignoring port {0} due to subnet mismatch".format(port.id))
+                                continue
+
+                            router = api.neutron.router_get(self.request, port.device_id)
+                            if router.get("external_gateway_info", {}).get("network_id") == float_net_id:
+                                LOG.debug("Found path to floating IP network via router: {0}".format(router.id))
+                                found = True
+                                break
+
+                        if not found:
+                            if self.networks[net_id].shared:
+                                # The Neutron API doesn't return interface ports for routers
+                                # owned by another tenant, even if that network is shared
+                                # with us.  So we just have to accept the user's request.
+                                LOG.warning("Unable to locate router for floating IP on shared network: {0}".format(net_id))
+                            else:
+                                msg = _("No router interface found that connects the selected network with the floating IP.")
+                                self._errors[field_id] = self.error_class([msg])
+                        else:
+                            nic["floating_ip"] = floating_ip
+                            used_ips["_float_"].add(floating_ip)
+
+                if "network_id" in nic:
+                    nics.append(nic)
+        except:
+            exceptions.handle(self.request)
+            msg = _("Validation failed with an unexpected error.")
             raise forms.ValidationError(msg)
 
-        data["public_ip_net"] = primary_net_id
+        if not nics:
+            msg = _("At least one network interface must be assigned.")
+            raise forms.ValidationError(msg)
+
+        if settings.NCI_DUPLICATE_VM_NETWORK_INTF:
+            # See "server_create_hook_func()" for why this check is made.
+            float_nets = set([n["network_id"] for n in nics if "floating_ip" in n])
+            for net_id in float_nets:
+                if len(filter(lambda x: x["network_id"] == net_id, nics)) > 1:
+                    msg = _("Networks with a floating IP specified can only be assigned to one interface.")
+                    raise forms.ValidationError(msg)
+
+        data["nics"] = nics
         return data
 
 
-class SetNetwork(base_mod.SetNetwork):
+# NB: We aren't subclassing the upstream implementation of this step.
+class SetNetwork(workflows.Step):
     action_class = SetNetworkAction
-    extra_contributes = ["public_ip", "public_ip_net"]
-
-    def __init__(self, workflow):
-        super(SetNetwork, self).__init__(workflow)
-        self.contributes = list(self.contributes) + self.extra_contributes
-
-        # Use our modified version of the custom workflow template which
-        # makes additional fields visible.  Don't bother if the base class
-        # has reverted to the default template since it shows all fields.
-        if self.template_name != workflows.Step.template_name:
-            self.template_name = "project/instances/../instances_nci/_update_networks.html"
+    contributes = ("nics", "network_id")
+    template_name = "project/instances/../instances_nci/_update_networks.html"
 
     def contribute(self, data, context):
         context = super(SetNetwork, self).contribute(data, context)
 
-        # Because the base class method overrides the default behaviour,
-        # we have to explicitly add our extra fields here.
-        for k in self.extra_contributes:
-            context[k] = data.get(k)
+        if context["nics"]:
+            # Emulate the network list set in the upstream implementation.
+            context["network_id"] = [n["network_id"] for n in context["nics"]]
 
         return context
 
@@ -445,7 +681,7 @@ class BootstrapConfigAction(workflows.Action):
                 try:
                     project_cfg = json.loads(obj.data)
                 except ValueError as e:
-                    LOG.exception("Error parsing project configuration: %s" % e)
+                    LOG.exception("Error parsing project configuration: {0}".format(e))
                     messages.error(request, str(e))
                     msg = _("VL project configuration is corrupt.")
                     messages.warning(request, msg)
@@ -470,95 +706,82 @@ class BootstrapConfig(workflows.Step):
     contributes = ("puppet_action", "repo_branch", "install_updates")
 
 
-def server_create_hook_func(request, context):
-    fixed_ip = None
-    float_id = None
-    if context.get("public_ip"):
-        ip_net = context.get("public_ip_net")
-
-        pair = context["public_ip"].split(":", 1)
-        if pair[0] == "fx":
-            fixed_ip = pair[1]
-        elif pair[0] == "fl":
-            float_id = pair[1]
-        else:
-            raise AssertionError("Unexpected public IP type")
-
+def server_create_hook_func(request, context, floats):
     def _impl(*args, **kwargs):
-        if fixed_ip:
-            found = False
-            for nic in kwargs.get("nics", []):
-                if nic.get("net-id") == ip_net:
-                    found = True
-                    if ":" in fixed_ip:
-                        nic["v6-fixed-ip"] = fixed_ip
-                    else:
-                        nic["v4-fixed-ip"] = fixed_ip
+        float_nets = {}
+        kwargs["nics"] = []
+        nics = context["nics"] or []
+        for n in nics:
+            # https://github.com/openstack/python-novaclient/blob/2.20.0/novaclient/v1_1/servers.py#L528
+            nic = {"net-id": n["network_id"]}
+            ip = n.get("fixed_ip")
+            if ip:
+                if ip.version == 6:
+                    nic["v6-fixed-ip"] = str(ip)
+                else:
+                    assert ip.version == 4
+                    nic["v4-fixed-ip"] = str(ip)
 
-            if not found:
-                msg = _("Unable to locate NIC for fixed IP assignment.")
-                messages.error(request, msg)
-                raise exceptions.WorkflowError(msg)
+            kwargs["nics"].append(nic)
+
+            if "floating_ip" in n:
+                assert n["network_id"] not in float_nets
+                float_nets[n["network_id"]] = n["floating_ip"]
 
         srv = api.nova.server_create(*args, **kwargs)
-        LOG.debug("New instance ID: %s" % getattr(srv, "id", "UNKNOWN"))
 
-        if float_id:
-            failed = True
-            if hasattr(srv, "id"):
-                try:
-                    # Find the port created for the new instance we just
-                    # started which is attached to the network selected for the
-                    # floating IP association.  We have to wait until the port
-                    # is created by Neutron and a fixed IP is assigned.
-                    port_id = None
-                    max_attempts = 15
-                    attempt = 0
-                    while attempt < max_attempts:
-                        attempt += 1
+        if float_nets:
+            # Find the ports created for the new instance which we need to
+            # associate each floating IP with.  We have to wait until the
+            # ports are created by Neutron.  Note that the only unique
+            # information we have to identify which port should be paired
+            # with each floating IP is the network ID.  Hence we don't
+            # support more than one interface connected to the same network
+            # when floating IPs are specified.
+            try:
+                max_attempts = 15
+                attempt = 0
+                while attempt < max_attempts:
+                    attempt += 1
 
-                        LOG.debug("Locating port on network: %s" % ip_net)
-                        ports = api.neutron.port_list(request,
-                            device_id=srv.id,
-                            network_id=ip_net)
-                        if ports and getattr(ports[0], "fixed_ips", []) and ports[0].fixed_ips[0].get("ip_address"):
-                            port_id = ports[0].id
-                            LOG.debug("Found port %s with IP address: %s" % (port_id, ports[0].fixed_ips[0]["ip_address"]))
-                            break
+                    LOG.debug("Fetching network ports for instance: {0}".format(srv.id))
+                    ports = api.neutron.port_list(request, device_id=srv.id)
+                    for p in ports:
+                        LOG.debug("Found port: id={0}; owner={1}; network={2}".format(*[p.get(x) for x in ["id", "device_owner", "network_id"]]))
+                        if p.get("device_owner", "").startswith("compute:") and (p.get("network_id") in float_nets):
+                            for t in api.network.floating_ip_target_list_by_instance(request, srv.id):
+                                LOG.debug("Got floating IP target: {0}".format(t))
+                                if t.startswith(p.id):
+                                    float_id = float_nets[p.network_id]
+                                    api.network.floating_ip_associate(request, float_id, t)
+                                    del float_nets[p.network_id]
+                                    msg = _("Floating IP {0} associated with new instance.".format(floats[float_id].ip))
+                                    messages.info(request, msg)
+                                    break
 
-                        status = api.nova.server_get(request, srv.id).status.lower()
-                        if status == "active":
-                            if max_attempts != 2:
-                                LOG.debug("VM state has become active")
-                                max_attempts = 2
-                                attempt = 0
-                        elif status != "build":
-                            LOG.debug("Aborting wait loop due to server status: %s" % status)
-                            break
+                    if not float_nets:
+                        # All floating IPs have now been assigned.
+                        srv = api.nova.server_get(request, srv.id)
+                        break
 
-                        LOG.debug("Waiting for network port allocation")
-                        time.sleep(2)
+                    status = api.nova.server_get(request, srv.id).status.lower()
+                    if status == "active":
+                        if max_attempts != 2:
+                            LOG.debug("VM state has become active")
+                            max_attempts = 2
+                            attempt = 0
+                    elif status != "build":
+                        LOG.debug("Aborting wait loop due to server status: {0}".format(status))
+                        break
 
-                    if port_id:
-                        # Now locate that port in the list of floating IP targets.
-                        for target in api.network.floating_ip_target_list_by_instance(request, srv.id):
-                            LOG.debug("Got floating IP target: %s" % target)
-                            if target.startswith(port_id):
-                                api.network.floating_ip_associate(request,
-                                    float_id,
-                                    target)
-                                srv = api.nova.server_get(request, srv.id)
-                                failed = False
-                                break
-                except:
-                    exceptions.handle(request)
+                    LOG.debug("Waiting for network port allocation")
+                    time.sleep(2)
+            except:
+                exceptions.handle(request)
 
-            if failed:
-                msg = _("Failed to associate floating IP with new instance.")
+            for f in float_nets.itervalues():
+                msg = _("Failed to associate floating IP {0} with new instance.".format(floats[f].ip))
                 messages.warning(request, msg)
-            else:
-                msg = _("Floating IP associated with new instance.")
-                messages.info(request, msg)
 
         return srv
 
@@ -585,12 +808,14 @@ class NCILaunchInstance(base_mod.LaunchInstance):
 
     @sensitive_variables("context")
     def validate(self, context):
-        if context.get("public_ip") and (context["count"] > 1):
-            msg = _("A single public IP can't be assigned to more than one instance.")
-            self.add_error_to_step(msg, SetNetworkAction.slug)
-            # Missing from "add_error_to_step()"...
-            self.get_step(SetNetworkAction.slug).has_errors = True
-            return False
+        if context["count"] > 1:
+            keys = set(itertools.chain.from_iterable(context["nics"]))
+            if filter(lambda k: k.endswith("_ip"), keys):
+                msg = _("Multiple instances cannot be launched with the same IP address.")
+                self.add_error_to_step(msg, SetNetworkAction.slug)
+                # Missing from "add_error_to_step()"...
+                self.get_step(SetNetworkAction.slug).has_errors = True
+                return False
 
         return True
 
@@ -613,7 +838,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             try:
                 boot_params = json.loads(obj.data)
             except ValueError as e:
-                LOG.exception("Error parsing project configuration: %s" % e)
+                LOG.exception("Error parsing project configuration: {0}".format(e))
                 messages.error(request, str(e))
                 msg = _("VL project configuration is corrupt.")
                 messages.error(request, msg)
@@ -655,7 +880,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             part = MIMEText(json.dumps(cloud_cfg), "cloud-config")
             user_data.attach(part)
         except (ValueError, TypeError) as e:
-            LOG.exception("Error serialising userdata: %s" % e)
+            LOG.exception("Error serialising userdata: {0}".format(e))
             messages.error(request, str(e))
             msg = _("Failed to construct userdata for VM instance.")
             messages.error(request, msg)
@@ -672,7 +897,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
         # instead.
         api_proxy = nciutils.AttributeProxy(base_mod.api)
         api_proxy.nova = nciutils.AttributeProxy(base_mod.api.nova)
-        api_proxy.nova.server_create = server_create_hook_func(request, context)
+
+        floats = self.get_step(SetNetworkAction.slug).action.pub_ips["float"]
+        api_proxy.nova.server_create = server_create_hook_func(request, context, floats)
 
         # We have to strip off any function decorators, otherwise the rebind
         # won't be visible inside the function.  Whilst this does rely on some
