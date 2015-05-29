@@ -133,6 +133,21 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
 
         return choices
 
+    def clean_name(self):
+        if hasattr(super(SetInstanceDetailsAction, self), "clean_name"):
+            val = super(SetInstanceDetailsAction, self).clean_name()
+        else:
+            val = self.cleaned_data.get("name")
+
+        val = val.strip()
+        if val and ("." in val):
+            valid_fqdn = r"^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$"
+            if not re.search(valid_fqdn, val):
+                msg = _("The specified FQDN doesn't satisfy the requirements of a valid DNS hostname.")
+                raise forms.ValidationError(msg)
+
+        return val
+
     def clean_image_id(self):
         if hasattr(super(SetInstanceDetailsAction, self), "clean_image_id"):
             val = super(SetInstanceDetailsAction, self).clean_image_id()
@@ -875,6 +890,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
 
         cloud_cfg["package_upgrade"] = (context["install_updates"] != "no")
         cloud_cfg["package_reboot_if_required"] = (context["install_updates"] == "reboot")
+
+        if "." in context["name"]:
+            cloud_cfg["fqdn"] = context["name"]
 
         # Construct the "user data" to inject into the VM for "cloud-init".
         user_data = MIMEMultipart()
