@@ -646,16 +646,17 @@ class BootstrapConfigAction(workflows.Action):
         required=False,
         choices=[
             ("apply", _("Apply")),
+            ("r10k-deploy", _("R10k Deploy")),
             ("", _("None")),
         ],
         initial="",
-        help_text=_("The Puppet command to execute."))
+        help_text=_("Puppet command to execute."))
 
-    repo_branch = forms.RegexField(
-        label=_("Puppet Repository Branch"),
+    puppet_env = forms.RegexField(
+        label=_("Puppet Environment"),
         required=False,
         regex=REPO_BRANCH_REGEX,
-        help_text=_("The branch to checkout from the Puppet configuration repository."))
+        help_text=_("Puppet configuration environment (or equivalent branch name) to deploy."))
 
     install_updates = forms.ChoiceField(
         label=_("Install Updates"),
@@ -706,15 +707,14 @@ class BootstrapConfigAction(workflows.Action):
                     messages.warning(request, msg)
 
                 if project_cfg is not None:
-                    self.fields["repo_branch"].initial = project_cfg.get("repo_branch", "")
-                    if self.fields["repo_branch"].initial:
-                        self.fields["puppet_action"].initial = "apply"
+                    self.fields["puppet_action"].initial = "apply"
+                    self.fields["puppet_env"].initial = project_cfg.get("puppet_env", "")
 
     def clean(self):
         data = super(BootstrapConfigAction, self).clean()
 
-        if data.get("puppet_action") and not data.get("repo_branch"):
-            msg = _("A branch name must be specified for the selected Puppet action.")
+        if data.get("puppet_action") and not data.get("puppet_env"):
+            msg = _("An environment name is required for the selected Puppet action.")
             raise forms.ValidationError(msg)
 
         return data
@@ -722,7 +722,8 @@ class BootstrapConfigAction(workflows.Action):
 
 class BootstrapConfig(workflows.Step):
     action_class = BootstrapConfigAction
-    contributes = ("puppet_action", "repo_branch", "install_updates")
+    contributes = ("puppet_action", "puppet_env", "install_updates")
+    template_name = "project/instances/../instances_nci/_bootstrap_step.html"
 
 
 def server_create_hook_func(request, context, floats):
@@ -840,10 +841,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
 
     @sensitive_variables("context")
     def handle(self, request, context):
-        # If a branch name has been specified, then we need to load the
-        # project's base configuration first so that we have all the info
-        # needed to clone the repository inside the VM.
-        if context["repo_branch"]:
+        cloud_cfg = {}
+        if context["puppet_action"]:
+            # Load the project's VL configuration.
             try:
                 obj = api.swift.swift_get_object(request,
                     nci_private_container_name(request),
@@ -855,38 +855,30 @@ class NCILaunchInstance(base_mod.LaunchInstance):
                 return False
 
             try:
-                boot_params = json.loads(obj.data)
+                project_cfg = json.loads(obj.data)
             except ValueError as e:
                 LOG.exception("Error parsing project configuration: {0}".format(e))
                 messages.error(request, str(e))
                 msg = _("VL project configuration is corrupt.")
                 messages.error(request, msg)
                 return False
-        else:
-            boot_params = {}
 
-        # Now add the instance specific parameters.
-        boot_params.update([(k, context[k]) for k in BootstrapConfig.contributes])
+            # Add the cloud-config parameters for the "nci.puppet" module.
+            puppet_cfg = cloud_cfg.setdefault("nci", {}).setdefault("puppet", {})
+            puppet_cfg["action"] = context["puppet_action"]
+            puppet_cfg["environment"] = context["puppet_env"]
 
-        # And finally, convert them into the required cloud-config parameters.
-        cloud_cfg = {}
-        if boot_params["repo_branch"]:
-            cfg = cloud_cfg.setdefault("nci", {}).setdefault("clone_repo", {})
-            cfg["branch"] = boot_params["repo_branch"]
-            cfg["path"] = boot_params.get("repo_path", "")
+            repo_cfg = puppet_cfg.setdefault("repo", {})
+            repo_cfg["path"] = project_cfg.get("repo_path", "")
             try:
-                if "repo_key" in boot_params:
-                    key = SSHKeyStore(request).load(boot_params["repo_key"])
-                    cfg["key"] = key.get_private()
+                if "repo_key" in project_cfg:
+                    key = SSHKeyStore(request).load(project_cfg["repo_key"])
+                    repo_cfg["key"] = key.get_private()
             except:
                 exceptions.handle(request)
                 msg = _("Failed to load deployment key.")
                 messages.error(request, msg)
                 return False
-
-        if boot_params["puppet_action"]:
-            cfg = cloud_cfg.setdefault("nci", {}).setdefault("puppet", {})
-            cfg["action"] = boot_params["puppet_action"]
 
         cloud_cfg["package_upgrade"] = (context["install_updates"] != "no")
         cloud_cfg["package_reboot_if_required"] = (context["install_updates"] == "reboot")

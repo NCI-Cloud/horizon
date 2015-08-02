@@ -1,0 +1,14 @@
+{% load i18n %}
+{% include "horizon/common/_workflow_step.html" %}
+
+<script src="{{ STATIC_URL }}project_nci/js/instances_workflow.js" type="text/javascript" charset="utf-8"></script>
+
+<script>
+  if (typeof horizon.nci_instance_bootstrap !== 'undefined') {
+    horizon.nci_instance_bootstrap.workflow_init($(".workflow"), "{{ step.slug }}");
+  } else {
+    addHorizonLoadEvent(function() {
+      horizon.nci_instance_bootstrap.workflow_init($(".workflow"), "{{ step.slug }}");
+    });
+  }
+</script>

@@ -39,17 +39,17 @@ LOG = logging.getLogger(__name__)
 
 
 class VLConfigForm(forms.SelfHandlingForm):
+    puppet_env = forms.RegexField(
+        label=_("Default Puppet Environment"),
+        required=True,
+        regex=REPO_BRANCH_REGEX,
+        help_text=_("Default Puppet configuration environment (or branch name).  This value can be overridden in the launch instance dialog."))
+
     repo_path = forms.RegexField(
         label=_("Puppet Repository Path"),
         required=True,
         regex=REPO_PATH_REGEX,
         help_text=_("Path component of the Puppet configuration repository URL."))
-
-    repo_branch = forms.RegexField(
-        label=_("Default Puppet Repository Branch"),
-        required=True,
-        regex=REPO_BRANCH_REGEX,
-        help_text=_("The default branch to checkout from the Puppet configuration repository.  This value can be overridden in the launch instance dialog."))
 
     repo_key_public = forms.CharField(
         widget=forms.Textarea(attrs={"readonly": True}),
@@ -65,7 +65,7 @@ class VLConfigForm(forms.SelfHandlingForm):
         label=_("Generate New Deployment Key"),
         required=False,
         initial=True,
-        help_text=_("Generates a new SSH key for deploying the Puppet repository."))
+        help_text=_("Generates a new SSH key for deploying the Puppet configuration repository."))
 
     revision = forms.CharField(
         widget=forms.HiddenInput(),
@@ -106,8 +106,8 @@ class VLConfigForm(forms.SelfHandlingForm):
             if request.method == "GET":
                 msg = _("No existing project configuration found.")
                 self.set_warning(msg)
+                self.fields["puppet_env"].initial = "production"
                 self.fields["repo_path"].initial = "p/%s/puppet.git" % request.user.project_name
-                self.fields["repo_branch"].initial = "master"
             return
 
         for k, v in self.saved_params.iteritems():
@@ -147,6 +147,9 @@ class VLConfigForm(forms.SelfHandlingForm):
 
     def handle(self, request, data):
         new_params = self.saved_params.copy()
+        if "repo_branch" in new_params:
+            del new_params["repo_branch"]
+
         new_params.update([(k, v) for k, v in data.iteritems() if not k.startswith("repo_key")])
 
         try:

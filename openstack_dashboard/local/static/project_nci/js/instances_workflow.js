@@ -225,4 +225,24 @@ horizon.nci_instance_networks = {
   },
 };
 
+
+horizon.nci_instance_bootstrap = {
+  workflow_init: function(modal, step_slug) {
+    //debugger;
+    var puppet_action_select = $("#id_puppet_action");
+    puppet_action_select.change(function(evt) {
+      var el = $(this);
+      var puppet_env_field = $("#id_puppet_env").closest("div.form-field");
+      if (el.val()) {
+        puppet_env_field.removeClass("hide");
+      }
+      else {
+        puppet_env_field.addClass("hide");
+      }
+    });
+
+    puppet_action_select.change();
+  },
+};
+
 // vim:ts=2 et sw=2 sts=2:
