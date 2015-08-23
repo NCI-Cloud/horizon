@@ -31,8 +31,8 @@ from horizon import messages
 
 from openstack_dashboard import api
 
-from .constants import *
-from .ssh import SSHKeyStore
+from openstack_dashboard.local.nci import crypto as ncicrypto
+from openstack_dashboard.local.nci.constants import *
 
 
 LOG = logging.getLogger(__name__)
@@ -74,15 +74,15 @@ class VLConfigForm(forms.SelfHandlingForm):
     def __init__(self, request, *args, **kwargs):
         super(VLConfigForm, self).__init__(request, *args, **kwargs)
         self.saved_params = {}
-        self.key_store = SSHKeyStore(request)
+        self.key_store = ncicrypto.PrivateKeyStore(request)
 
         obj = None
         try:
             LOG.debug("Checking if project configuration exists")
             container = nci_private_container_name(request)
-            if api.swift.swift_object_exists(request, container, PROJECT_CONFIG_PATH):
+            if api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ):
                 LOG.debug("Loading project configuration")
-                obj = api.swift.swift_get_object(request, container, PROJECT_CONFIG_PATH)
+                obj = api.swift.swift_get_object(request, container, VL_PROJECT_CONFIG_OBJ)
         except:
             exceptions.handle(request)
             # NB: Can't use "self.api_error()" here since form not yet validated.
@@ -119,16 +119,14 @@ class VLConfigForm(forms.SelfHandlingForm):
 
             try:
                 key = self.key_store.load(self.saved_params["repo_key"])
+                self.fields["repo_key_public"].initial = key.export_public("OpenSSH")
+                self.fields["repo_key_fp"].initial = key.get_fingerprint()
             except:
                 exceptions.handle(request)
                 # NB: Can't use "self.api_error()" here since form not yet validated.
                 msg = _("Failed to load deployment key.")
                 self.set_warning(msg)
                 key = None
-
-            if key:
-                self.fields["repo_key_public"].initial = key.get_public()
-                self.fields["repo_key_fp"].initial = key.get_fingerprint()
 
     def clean(self):
         data = super(VLConfigForm, self).clean()
@@ -158,12 +156,19 @@ class VLConfigForm(forms.SelfHandlingForm):
             if not api.swift.swift_container_exists(request, container):
                 api.swift.swift_create_container(request, container)
 
-            if not api.swift.swift_object_exists(request, container, NCI_PVT_README_NAME):
+            if not api.swift.swift_object_exists(request, container, "README"):
                 msg = "**WARNING**  Don't delete, rename or modify this container or any objects herein."
                 api.swift.swift_api(request).put_object(container,
-                    NCI_PVT_README_NAME,
+                    "README",
                     msg,
                     content_type="text/plain")
+
+            # And check that a temporary URL key is defined as we'll need it
+            # when launching new instances.
+            if not ncicrypto.swift_get_temp_url_key(request):
+                LOG.debug("Generating temp URL secret key")
+                ncicrypto.swift_create_temp_url_key(request)
+                messages.success(request, _("Temporary URL key generated successfully."))
         except:
             exceptions.handle(request)
             msg = _("Failed to save configuration.")
@@ -187,10 +192,17 @@ class VLConfigForm(forms.SelfHandlingForm):
             obj_data = json.dumps(new_params)
             try:
                 try:
+                    if self.saved_params.get("revision"):
+                        LOG.debug("Backing up current project configuration")
+                        api.swift.swift_copy_object(request,
+                            container,
+                            VL_PROJECT_CONFIG_OBJ,
+                            container,
+                            "%s_%s" % (VL_PROJECT_CONFIG_OBJ, self.saved_params["revision"]))
+
                     LOG.debug("Saving project configuration")
-                    container = nci_private_container_name(request)
                     api.swift.swift_api(request).put_object(container,
-                        PROJECT_CONFIG_PATH,
+                        VL_PROJECT_CONFIG_OBJ,
                         obj_data,
                         content_type="application/json")
                 except:
@@ -205,21 +217,13 @@ class VLConfigForm(forms.SelfHandlingForm):
                         exceptions.handle(request)
                         msg = _("Failed to rollback new deployment key.")
                         messages.warning(request, msg)
+
                     raise saved_ex[0], saved_ex[1], saved_ex[2]
             except:
                 exceptions.handle(request)
                 msg = _("Failed to save configuration.")
                 self.api_error(msg)
                 return False
-
-            try:
-                if new_key and self.saved_params.get("repo_key"):
-                    LOG.debug("Removing previous SSH key")
-                    self.key_store.delete(self.saved_params["repo_key"])
-            except:
-                exceptions.handle(request)
-                msg = _("Failed to remove old deployment key.")
-                messages.warning(request, msg)
 
             self.saved_params = new_params
             messages.success(request, _("Configuration saved."))

@@ -1,6 +1,6 @@
 # openstack_dashboard.local.dashboards.project_nci.vlconfig.views
 #
-# Copyright (c) 2014, NCI, Australian National University.
+# Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,8 +20,9 @@ from django.core.urlresolvers import reverse_lazy
 
 from horizon import forms
 
-from .constants import VLCONFIG_INDEX_URL
 from .forms import VLConfigForm
+
+VLCONFIG_INDEX_URL = "horizon:project:vlconfig:index"
 
 
 class IndexView(forms.ModalFormView):

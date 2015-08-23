@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.project_nci.vlconfig.constants
+# openstack_dashboard.local.nci.exceptions
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -16,19 +16,9 @@
 #    under the License.
 #
 
-VLCONFIG_INDEX_URL = "horizon:project:vlconfig:index"
 
-REPO_PATH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*\.git$"
-REPO_BRANCH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*$"
-
-# Swift paths
-NCI_PVT_CONTAINER_PREFIX = "nci-private-"
-NCI_PVT_README_NAME = "README"
-PROJECT_CONFIG_PATH = "project-config"
-
-
-def nci_private_container_name(request):
-    return NCI_PVT_CONTAINER_PREFIX + request.user.project_id
+class CryptoError(Exception):
+    pass
 
 
 # vim:ts=4 et sw=4 sts=4:

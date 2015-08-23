@@ -9,8 +9,8 @@ HORIZON_CONFIG["customization_module"] = "openstack_dashboard.local.nci.customis
 # TODO: This should be done by using "ADD_EXCEPTIONS" in the "_10_project.py"
 # pluggable settings file but we can't due to this bug (fixed in Kilo):
 #   https://bugs.launchpad.net/horizon/+bug/1404032
-from paramiko.ssh_exception import SSHException
-HORIZON_CONFIG["exceptions"]["recoverable"] += (SSHException,)
+from openstack_dashboard.local.nci.exceptions import CryptoError
+HORIZON_CONFIG["exceptions"]["recoverable"] += (CryptoError,)
 
 # Maximum number of vNICs to attach when launching a VM.
 NCI_VM_NETWORK_INTF_LIMIT = 4
