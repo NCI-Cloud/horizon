@@ -45,9 +45,9 @@ from horizon import workflows
 from openstack_dashboard import api
 from openstack_dashboard.dashboards.project.instances.workflows import create_instance as base_mod
 
-from openstack_dashboard.local.dashboards.project_nci.vlconfig.constants import *
-from openstack_dashboard.local.dashboards.project_nci.vlconfig.ssh import SSHKeyStore
+from openstack_dashboard.local.nci import crypto as ncicrypto
 from openstack_dashboard.local.nci import utils as nciutils
+from openstack_dashboard.local.nci.constants import *
 
 
 LOG = logging.getLogger(__name__)
@@ -683,14 +683,14 @@ class BootstrapConfigAction(workflows.Action):
         is_vl = False
         try:
             container = nci_private_container_name(request)
-            is_vl = api.swift.swift_object_exists(request, container, PROJECT_CONFIG_PATH)
+            is_vl = api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ)
         except:
             exceptions.handle(request)
 
         if is_vl:
             obj = None
             try:
-                obj = api.swift.swift_get_object(request, container, PROJECT_CONFIG_PATH)
+                obj = api.swift.swift_get_object(request, container, VL_PROJECT_CONFIG_OBJ)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -847,7 +847,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             try:
                 obj = api.swift.swift_get_object(request,
                     nci_private_container_name(request),
-                    PROJECT_CONFIG_PATH)
+                    VL_PROJECT_CONFIG_OBJ)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -872,8 +872,9 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             repo_cfg["path"] = project_cfg.get("repo_path", "")
             try:
                 if "repo_key" in project_cfg:
-                    key = SSHKeyStore(request).load(project_cfg["repo_key"])
-                    repo_cfg["key"] = key.get_private()
+                    ks = ncicrypto.PrivateKeyStore(request)
+                    key = ks.load(project_cfg["repo_key"])
+                    repo_cfg["key"] = key.cloud_config_dict()
             except:
                 exceptions.handle(request)
                 msg = _("Failed to load deployment key.")

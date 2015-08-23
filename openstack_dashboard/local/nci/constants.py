@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.project_nci.containers.views
+# openstack_dashboard.local.nci.constants
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -16,20 +16,16 @@
 #    under the License.
 #
 
-from openstack_dashboard.dashboards.project.containers import views as base_mod
+REPO_PATH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*\.git$"
+REPO_BRANCH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*$"
 
-from openstack_dashboard.local.nci.constants import NCI_PVT_CONTAINER_PREFIX
+# Swift paths
+NCI_PVT_CONTAINER_PREFIX = "nci-private-"
+VL_PROJECT_CONFIG_OBJ = "project-config"
 
 
-class NCIContainerView(base_mod.ContainerView):
-    def get_containers_data(self):
-        containers = super(NCIContainerView, self).get_containers_data()
-        if self.request.user.is_superuser:
-            return containers
-        else:
-            # Hide the private NCI configuration container to help prevent
-            # accidental deletion etc.
-            return [x for x in containers if not x.name.startswith(NCI_PVT_CONTAINER_PREFIX)]
+def nci_private_container_name(request):
+    return NCI_PVT_CONTAINER_PREFIX + request.user.project_id
 
 
 # vim:ts=4 et sw=4 sts=4:
