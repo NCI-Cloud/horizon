@@ -193,12 +193,14 @@ class VLConfigForm(forms.SelfHandlingForm):
             try:
                 try:
                     if self.saved_params.get("revision"):
-                        LOG.debug("Backing up current project configuration")
-                        api.swift.swift_copy_object(request,
-                            container,
-                            VL_PROJECT_CONFIG_OBJ,
-                            container,
-                            "%s_%s" % (VL_PROJECT_CONFIG_OBJ, self.saved_params["revision"]))
+                        backup_name = "%s_%s" % (VL_PROJECT_CONFIG_OBJ, self.saved_params["revision"])
+                        if not api.swift.swift_object_exists(request, container, backup_name):
+                            LOG.debug("Backing up current project configuration")
+                            api.swift.swift_copy_object(request,
+                                container,
+                                VL_PROJECT_CONFIG_OBJ,
+                                container,
+                                backup_name)
 
                     LOG.debug("Saving project configuration")
                     api.swift.swift_api(request).put_object(container,
