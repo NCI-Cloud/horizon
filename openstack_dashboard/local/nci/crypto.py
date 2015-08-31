@@ -18,20 +18,29 @@
 
 import base64
 import binascii
-import Crypto.PublicKey.RSA
-import Crypto.Random
 import hashlib
 import hmac
 import logging
+import os
 import os.path
 import paramiko.rsakey
 #import pdb ## DEBUG
+import subprocess
 import time
 import uuid
 import urllib
 import urlparse
 
 from StringIO import StringIO
+
+try:
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import BestAvailableEncryption, Encoding, load_pem_private_key, NoEncryption, PrivateFormat
+    USE_NEW_CRYPTO_LIB=True
+except:
+    from OpenSSL import crypto
+    USE_NEW_CRYPTO_LIB=False
 
 from django.conf import settings
 
@@ -47,39 +56,80 @@ TEMP_URL_KEY_METADATA_HDR = "X-Account-Meta-Temp-URL-Key"
 
 
 class PrivateKey(object):
-    def __init__(self, rsa, request, ref):
-        self._rsa = rsa
+    def __init__(self, rsa_obj, request, ref):
+        self._rsa_obj = rsa_obj
+        self._ssh_key_cache = None
         self._request = request
         self._ref = ref
 
     def export_private(self):
-        """Exports the encrypted private key."""
+        """Exports the private key in encrypted PEM format."""
         pw = self.get_passphrase()
+
         try:
-            return self._rsa.exportKey("PEM", pw)
+            if USE_NEW_CRYPTO_LIB:
+                return self._rsa_obj.private_bytes(Encoding.PEM,
+                    PrivateFormat.PKCS8,
+                    BestAvailableEncryption(pw))
+            else:
+                return crypto.dump_privatekey(crypto.FILETYPE_PEM,
+                    self._rsa_obj,
+                    "aes-256-cbc",
+                    pw)
         except Exception as e:
             LOG.exception("Error exporting private key (ref %s): %s" % (self._ref, e))
             raise CryptoError("Failed to export private key with ref: %s" % self._ref)
 
-    def export_public(self, format="PEM"):
-        """Exports the public key component in the requested format."""
-        assert format in ("PEM", "OpenSSH")
+    @property
+    def _ssh_key(self):
+        if not self._ssh_key_cache:
+            if USE_NEW_CRYPTO_LIB:
+                pem = self._rsa_obj.private_bytes(Encoding.PEM,
+                    PrivateFormat.TraditionalOpenSSL,
+                    NoEncryption())
+            else:
+                pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, self._rsa_obj)
+                if "BEGIN RSA PRIVATE KEY" not in pem:
+                    # Convert from PKCS#8 into "traditional" RSA format.
+                    args = (
+                        "/usr/bin/openssl",
+                        "rsa",
+                        "-inform",
+                        "PEM",
+                        "-outform",
+                        "PEM",
+                    )
+                    proc = subprocess.Popen(args,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE)
+                    pem, err = proc.communicate(pem)
+                    rc = proc.poll()
+                    if rc:
+                        if err:
+                            LOG.error("Subprocess error output: %s" % err.strip())
+                        raise subprocess.CalledProcessError(rc, args[0])
+
+            self._ssh_key_cache = paramiko.rsakey.RSAKey(file_obj=StringIO(pem))
+
+        return self._ssh_key_cache
+
+    def ssh_publickey(self):
+        """Exports the public key component in OpenSSH format."""
         try:
-            out = self._rsa.publickey().exportKey(format)
+            return "%s %s %s" % (
+                self._ssh_key.get_name(),
+                self._ssh_key.get_base64(),
+                self._request.user.project_name,
+            )
         except Exception as e:
             LOG.exception("Error exporting public key (ref %s): %s" % (self._ref, e))
             raise CryptoError("Failed to export public key with ref: %s" % self._ref)
 
-        if format == "OpenSSH":
-            out += " " + self._request.user.project_name
-
-        return out
-
-    def get_fingerprint(self, sep=":"):
+    def ssh_fingerprint(self, sep=":"):
         """Returns the SSH fingerprint of the key."""
         try:
-            pem = self._rsa.exportKey("PEM")
-            fp = paramiko.rsakey.RSAKey(file_obj=StringIO(pem)).get_fingerprint()
+            fp = self._ssh_key.get_fingerprint()
         except Exception as e:
             LOG.exception("Error generating SSH key fingerprint (ref %s): %s" % (self._ref, e))
             raise CryptoError("Failed to get fingerprint for key with ref: %s" % self._ref)
@@ -174,7 +224,13 @@ class PrivateKeyStore(object):
     def generate(self):
         """Generates a new private key and saves it in the key store."""
         try:
-            rsa = Crypto.PublicKey.RSA.generate(3072)
+            if USE_NEW_CRYPTO_LIB:
+                rsa_obj = rsa.generate_private_key(65537,
+                    3072,
+                    default_backend())
+            else:
+                rsa_obj = crypto.PKey()
+                rsa_obj.generate_key(crypto.TYPE_RSA, 3072)
         except Exception as e:
             LOG.exception("Error generating new RSA key: %s" % e)
             raise CryptoError("Failed to generate new private key")
@@ -190,7 +246,7 @@ class PrivateKeyStore(object):
             if api.swift.swift_object_exists(self._request, container, ref):
                 raise CryptoError("Unable to generate unique key reference")
 
-        key = PrivateKey(rsa, self._request, ref)
+        key = PrivateKey(rsa_obj, self._request, ref)
         api.swift.swift_api(self._request).put_object(container,
             ref,
             key.export_private(),
@@ -206,7 +262,16 @@ class PrivateKeyStore(object):
         key = PrivateKey(None, self._request, ref)
         pw = key.get_passphrase()
         try:
-            key._rsa = Crypto.PublicKey.RSA.importKey(obj.data, pw)
+            if USE_NEW_CRYPTO_LIB:
+                LOG.debug("Using new cryptography library")
+                key._rsa_obj = load_pem_private_key(obj.data,
+                    pw,
+                    default_backend())
+            else:
+                LOG.debug("Using old cryptography library")
+                key._rsa_obj = crypto.load_privatekey(crypto.FILETYPE_PEM,
+                    obj.data,
+                    pw)
         except Exception as e:
             LOG.exception("Error importing RSA key: %s" % e)
             raise CryptoError("Failed to import private key with ref: %s" % ref)
@@ -223,7 +288,7 @@ class PrivateKeyStore(object):
 def swift_create_temp_url_key(request):
     """Assigns a secret key for generating temporary URLs to the object store."""
     try:
-        secret = base64.b64encode(Crypto.Random.get_random_bytes(32))
+        secret = base64.b64encode(os.urandom(32))
     except Exception as e:
         LOG.exception("Error generating temp URL key: %s" % e)
         raise CryptoError("Failed to generate temporary URL key")

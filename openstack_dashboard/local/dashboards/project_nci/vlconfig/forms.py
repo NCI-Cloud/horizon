@@ -119,8 +119,8 @@ class VLConfigForm(forms.SelfHandlingForm):
 
             try:
                 key = self.key_store.load(self.saved_params["repo_key"])
-                self.fields["repo_key_public"].initial = key.export_public("OpenSSH")
-                self.fields["repo_key_fp"].initial = key.get_fingerprint()
+                self.fields["repo_key_public"].initial = key.ssh_publickey()
+                self.fields["repo_key_fp"].initial = key.ssh_fingerprint()
             except:
                 exceptions.handle(request)
                 # NB: Can't use "self.api_error()" here since form not yet validated.
