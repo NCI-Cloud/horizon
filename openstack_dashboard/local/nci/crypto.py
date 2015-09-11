@@ -25,6 +25,7 @@ import os
 import os.path
 import paramiko.rsakey
 #import pdb ## DEBUG
+import six
 import subprocess
 import time
 import uuid
@@ -55,16 +56,124 @@ LOG = logging.getLogger(__name__)
 TEMP_URL_KEY_METADATA_HDR = "X-Account-Meta-Temp-URL-Key"
 
 
-class PrivateKey(object):
-    def __init__(self, rsa_obj, request, ref):
-        self._rsa_obj = rsa_obj
-        self._ssh_key_cache = None
-        self._request = request
+class CryptoStashItem(object):
+    def __init__(self, stash, metadata):
+        self._stash = stash
+
+        if metadata is None:
+            # Avoid overwriting an existing object in case we happen to get a
+            # duplicate UUID (should be very rare).  Swift API doesn't have an
+            # atomic "create unique" function so there is a race condition here
+            # but risk should be low.
+            container = nci_private_container_name(self._request)
+            ref = "{0}/{1}".format(self._stash._base_ref, uuid.uuid4())
+            if api.swift.swift_object_exists(self._request, container, ref):
+                ref = "{0}/{1}".format(self._stash._base_ref, uuid.uuid4())
+                if api.swift.swift_object_exists(self._request, container, ref):
+                    raise CryptoError("Unable to generate unique stash item reference")
+        else:
+            ref = metadata.get("ref")
+            if not ref:
+                raise CryptoError("Incomplete metadata for crypto stash item")
+
         self._ref = ref
 
-    def export_private(self):
+    @property
+    def _request(self):
+        return self._stash._request
+
+    @property
+    def ref(self):
+        """Returns the stash reference for this item."""
+        assert self._ref
+        return self._ref
+
+    @property
+    def public_ref(self):
+        """Returns the full public URL stash reference for this item."""
+        endpoint = urlparse.urlsplit(api.base.url_for(self._request, "object-store"))
+        path = "/".join([
+            endpoint.path,
+            urllib.quote(nci_private_container_name(self._request)),
+            urllib.quote(self.ref),
+        ])
+        return urlparse.urlunsplit(list(endpoint[:2]) + [path, "", ""])
+
+    def metadata(self):
+        """Returns a dictionary of the item's metadata for storage."""
+        return {
+            "version": 1,
+            "ref": self.ref,
+        }
+
+    def generate_temp_url(self):
+        """Generates a signed temporary URL for this item."""
+        secret = swift_get_temp_url_key(self._request)
+        if not secret:
+            raise CryptoError("Temporary URL key not configured in object storage")
+
+        # The signature needs to include the full path to the object as
+        # requested by the client.
+        public_url = urlparse.urlsplit(self.public_ref)
+        sig_path = public_url.path
+        if sig_path.startswith("/swift/"):
+            # Ceph uses a URI prefix to distinguish between S3 and Swift API
+            # calls so we need to remove this otherwise the calculated
+            # signature will be wrong.
+            # https://github.com/ceph/ceph/blob/v0.80.7/src/rgw/rgw_swift.cc#L578
+            sig_path = sig_path[6:]
+
+        expires = int(time.time()) + 3600
+        data = "\n".join(["GET", str(expires), sig_path])
+        LOG.debug("Temporary URL data for signature: {0}".format(repr(data)))
+
+        sig = hmac.new(secret.encode(), data.encode(), hashlib.sha1).hexdigest()
+        params = urllib.urlencode({
+            "temp_url_sig": sig,
+            "temp_url_expires": expires,
+        })
+        return urlparse.urlunsplit(list(public_url[:3]) + [params, ""])
+
+    def cloud_config_dict(self):
+        """Dictionary for referencing item in user-data for a VM instance."""
+        return {
+            "url": self.generate_temp_url(),
+        }
+
+
+class CryptoStashItemWithPwd(CryptoStashItem):
+    def __init__(self, stash, metadata):
+        super(CryptoStashItemWithPwd, self).__init__(stash, metadata)
+
+    @property
+    def password(self):
+        s1key = self._stash._s1key
+        assert len(s1key) >= hashlib.sha256().digest_size
+
+        # Second stage of HKDF simplified since we only need one round to
+        # reach a key length equal to the digest size.
+        h = hmac.new(s1key, digestmod=hashlib.sha256)
+        h.update(self.ref)
+        h.update(six.int2byte(1))
+        k = h.digest()
+
+        return base64.b64encode(k)
+
+    def cloud_config_dict(self):
+        d = super(CryptoStashItemWithPwd, self).cloud_config_dict()
+        d["pw"] = self.password
+        return d
+
+
+class PrivateKey(CryptoStashItemWithPwd):
+    def __init__(self, rsa_obj, stash, metadata):
+        super(PrivateKey, self).__init__(stash, metadata)
+        self._rsa_obj = rsa_obj
+        self._ssh_key_cache = None
+
+    def export(self):
         """Exports the private key in encrypted PEM format."""
-        pw = self.get_passphrase()
+        pw = self.password
 
         try:
             if USE_NEW_CRYPTO_LIB:
@@ -77,12 +186,12 @@ class PrivateKey(object):
                     "aes-256-cbc",
                     pw)
         except Exception as e:
-            LOG.exception("Error exporting private key (ref %s): %s" % (self._ref, e))
-            raise CryptoError("Failed to export private key with ref: %s" % self._ref)
+            LOG.exception("Error exporting private key (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to export private key with ref: {0}".format(self.ref))
 
     @property
     def _ssh_key(self):
-        if not self._ssh_key_cache:
+        if self._ssh_key_cache is None:
             if USE_NEW_CRYPTO_LIB:
                 pem = self._rsa_obj.private_bytes(Encoding.PEM,
                     PrivateFormat.TraditionalOpenSSL,
@@ -91,6 +200,7 @@ class PrivateKey(object):
                 pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, self._rsa_obj)
                 if "BEGIN RSA PRIVATE KEY" not in pem:
                     # Convert from PKCS#8 into "traditional" RSA format.
+                    # There isn't a way to do this via the PyOpenSSL API.
                     args = (
                         "/usr/bin/openssl",
                         "rsa",
@@ -107,7 +217,7 @@ class PrivateKey(object):
                     rc = proc.poll()
                     if rc:
                         if err:
-                            LOG.error("Subprocess error output: %s" % err.strip())
+                            LOG.error("Subprocess error output: {0}".format(err.strip()))
                         raise subprocess.CalledProcessError(rc, args[0])
 
             self._ssh_key_cache = paramiko.rsakey.RSAKey(file_obj=StringIO(pem))
@@ -117,112 +227,115 @@ class PrivateKey(object):
     def ssh_publickey(self):
         """Exports the public key component in OpenSSH format."""
         try:
-            return "%s %s %s" % (
+            return "{0} {1} {2}".format(
                 self._ssh_key.get_name(),
                 self._ssh_key.get_base64(),
                 self._request.user.project_name,
             )
         except Exception as e:
-            LOG.exception("Error exporting public key (ref %s): %s" % (self._ref, e))
-            raise CryptoError("Failed to export public key with ref: %s" % self._ref)
+            LOG.exception("Error exporting public SSH key (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to export public SSH key with ref: {0}".format(self.ref))
 
-    def ssh_fingerprint(self, sep=":"):
+    def ssh_fingerprint(self):
         """Returns the SSH fingerprint of the key."""
         try:
             fp = self._ssh_key.get_fingerprint()
         except Exception as e:
-            LOG.exception("Error generating SSH key fingerprint (ref %s): %s" % (self._ref, e))
-            raise CryptoError("Failed to get fingerprint for key with ref: %s" % self._ref)
+            LOG.exception("Error generating SSH key fingerprint (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to get SSH fingerprint for key with ref: {0}".format(self.ref))
 
-        return sep.join([binascii.hexlify(x) for x in fp])
-
-    def get_ref(self, public=False):
-        """Returns the key store reference for this key."""
-        assert self._ref
-        if public:
-            endpoint = urlparse.urlsplit(api.base.url_for(self._request, "object-store"))
-            path = "/".join([
-                endpoint.path,
-                urllib.quote(nci_private_container_name(self._request)),
-                urllib.quote(self._ref),
-            ])
-            return urlparse.urlunsplit(list(endpoint[:2]) + [path, "", ""])
-        else:
-            return self._ref
-
-    def generate_temp_url(self):
-        """Generates a signed temporary URL for the stored key object."""
-        secret = swift_get_temp_url_key(self._request)
-        if not secret:
-            raise CryptoError("Temporary URL key not configured in object store")
-
-        # The signature needs to include the full path to the object as
-        # requested by the client.
-        public_url = urlparse.urlsplit(self.get_ref(True))
-        sig_path = public_url.path
-        if sig_path.startswith("/swift/"):
-            # Ceph uses a URI prefix to distinguish between S3 and Swift API
-            # calls so we need to remove this otherwise the calculated
-            # signature will be wrong.
-            # https://github.com/ceph/ceph/blob/v0.80.7/src/rgw/rgw_swift.cc#L578
-            sig_path = sig_path[6:]
-
-        expires = int(time.time()) + 3600
-        data = "\n".join(["GET", str(expires), sig_path])
-        LOG.debug("Temporary URL data for signature: %s" % repr(data))
-
-        sig = hmac.new(secret.encode(), data.encode(), hashlib.sha1).hexdigest()
-        params = urllib.urlencode({
-            "temp_url_sig": sig,
-            "temp_url_expires": expires,
-        })
-        return urlparse.urlunsplit(list(public_url[:3]) + [params, ""])
-
-    def get_passphrase(self):
-        """Returns the passphrase used to encrypt the private key."""
-        assert self._ref
-
-        if hasattr(settings, "NCI_PRIVATE_KEY_STORE_SECRET_PATH"):
-            path = settings.NCI_PRIVATE_KEY_STORE_SECRET_PATH
-        else:
-            path = "/etc/openstack-dashboard"
-            if not os.path.isdir(path):
-                path = settings.LOCAL_PATH
-
-            path = os.path.join(path, ".pvt_key_store_secret")
-
-        try:
-            with open(path) as fh:
-                ks_secret = fh.readline().strip()
-                if not ks_secret:
-                    raise ValueError("Secret is empty")
-        except (IOError, ValueError) as e:
-            LOG.exception("Error loading key store secret: %s" % e)
-            raise CryptoError("Private key store internal fault")
-
-        h = hashlib.sha256(ks_secret)
-        h.update(self._request.user.project_id)
-        h.update(self._ref)
-        return base64.b64encode(h.digest())
-
-    def cloud_config_dict(self):
-        """Dictionary for referencing key in user-data for a VM instance."""
-        return {
-            "url": self.generate_temp_url(),
-            "pw": self.get_passphrase(),
-        }
+        return ":".join([binascii.hexlify(x) for x in fp])
 
 
-# TODO: Use Barbican for storing keys instead of Swift.  However, the
-# following blueprint will need to be implemented first so that we can
-# retrieve keys from inside the VM.
+# TODO: Use Barbican for storage instead of Swift.  However, the following
+# blueprint will need to be implemented first so that we can retrieve
+# items via cloud-init in the VM without needing a full user token.
 #   https://blueprints.launchpad.net/nova/+spec/instance-users
-class PrivateKeyStore(object):
-    def __init__(self, request):
+class CryptoStash(object):
+    def __init__(self, request, params=None):
         self._request = request
+        self._base_ref = "stash"
+        self._params = {}
+        self._s1key_cache = None
 
-    def generate(self):
-        """Generates a new private key and saves it in the key store."""
+        if params is not None:
+            self.init_params(params)
+
+    @property
+    def _s1key(self):
+        if self._s1key_cache is None:
+            if "salt" not in self.params:
+                raise CryptoError("Crypto stash parameters incomplete")
+
+            try:
+                salt = base64.b64decode(self.params.get("salt"))
+                if len(salt) < 32:
+                    raise ValueError("Salt is too short")
+            except Exception as e:
+                LOG.exception("Error decoding crypto stash salt: {0}".format(e))
+                raise CryptoError("Crypto stash internal fault")
+
+            if hasattr(settings, "NCI_CRYPTO_STASH_SECRET_PATH"):
+                path = settings.NCI_CRYPTO_STASH_SECRET_PATH
+            else:
+                path = "/etc/openstack-dashboard"
+                if not os.path.isdir(path):
+                    path = settings.LOCAL_PATH
+
+                path = os.path.join(path, ".crypto_stash")
+
+            try:
+                with open(path) as fh:
+                    master = fh.readline().strip()
+                    if not master:
+                        raise ValueError("Master secret is empty")
+
+                    master = base64.b64decode(master)
+                    if len(master) < 32:
+                        raise ValueError("Master secret is too short")
+            except Exception as e:
+                LOG.exception("Error loading crypto stash master secret: {0}".format(e))
+                raise CryptoError("Crypto stash internal fault")
+
+            # This is the first stage of HKDF:
+            #   https://tools.ietf.org/html/rfc5869
+            # NB: It's assumed that the master key was generated from a
+            # cryptographically strong random source.
+            h = hmac.new(salt, digestmod=hashlib.sha256)
+            h.update(master)
+            self._s1key_cache = h.digest()
+
+        return self._s1key_cache
+
+    def init_params(self, params=None):
+        """Creates new or loads existing stash parameters."""
+        if params is not None:
+            if not isinstance(params, dict):
+                raise CryptoError("Invalid crypto stash parameters type")
+            elif params.get("version", 0) != 1:
+                raise CryptoError("Unsupported crypto stash format")
+            self._params = params
+        else:
+            self._params = {
+                "version": 1,
+                "salt": base64.b64encode(os.urandom(32)),
+            }
+
+        self._s1key_cache = None
+
+    @property
+    def initialised(self):
+        return bool(self._params)
+
+    @property
+    def params(self):
+        """Returns current stash parameters."""
+        if not self._params:
+            raise CryptoError("Crypto stash parameters not set")
+        return self._params
+
+    def create_private_key(self):
+        """Generates a new private key and saves it in the stash."""
         try:
             if USE_NEW_CRYPTO_LIB:
                 rsa_obj = rsa.generate_private_key(65537,
@@ -232,35 +345,27 @@ class PrivateKeyStore(object):
                 rsa_obj = crypto.PKey()
                 rsa_obj.generate_key(crypto.TYPE_RSA, 3072)
         except Exception as e:
-            LOG.exception("Error generating new RSA key: %s" % e)
+            LOG.exception("Error generating new RSA key: {0}".format(e))
             raise CryptoError("Failed to generate new private key")
 
-        # Try and avoid overwriting an existing key in case we happen to get a
-        # duplicate UUID (should be very rare).  Swift API doesn't have an
-        # atomic "create unique" function so there is a race condition here
-        # but risk is low.
+        key = PrivateKey(rsa_obj, self, None)
         container = nci_private_container_name(self._request)
-        ref = "keystore/%s" % uuid.uuid4()
-        if api.swift.swift_object_exists(self._request, container, ref):
-            ref = "keystore/%s" % uuid.uuid4()
-            if api.swift.swift_object_exists(self._request, container, ref):
-                raise CryptoError("Unable to generate unique key reference")
-
-        key = PrivateKey(rsa_obj, self._request, ref)
         api.swift.swift_api(self._request).put_object(container,
-            ref,
-            key.export_private(),
+            key.ref,
+            key.export(),
             content_type="text/plain")
         return key
 
-    def load(self, ref):
-        """Loads an existing key from the key store."""
+    def load_private_key(self, metadata):
+        """Loads an existing private key from the stash."""
+        if not isinstance(metadata, dict):
+            raise CryptoError("Metadata missing or invalid type when loading private key")
+        key = PrivateKey(None, self, metadata)
         obj = api.swift.swift_get_object(self._request,
             nci_private_container_name(self._request),
-            ref)
+            key.ref)
 
-        key = PrivateKey(None, self._request, ref)
-        pw = key.get_passphrase()
+        pw = key.password
         try:
             if USE_NEW_CRYPTO_LIB:
                 LOG.debug("Using new cryptography library")
@@ -273,24 +378,26 @@ class PrivateKeyStore(object):
                     obj.data,
                     pw)
         except Exception as e:
-            LOG.exception("Error importing RSA key: %s" % e)
-            raise CryptoError("Failed to import private key with ref: %s" % ref)
+            LOG.exception("Error loading RSA key: {0}".format(e))
+            raise CryptoError("Failed to load private key with ref: {0}".format(key.ref))
 
         return key
 
-    def delete(self, ref):
-        """Deletes the given key from the key store."""
-        assert ref.startswith("keystore/")
+    def delete(self, obj):
+        """Deletes the given item from the stash."""
+        assert isinstance(obj, CryptoStashItem)
         container = nci_private_container_name(self._request)
-        api.swift.swift_delete_object(self._request, container, ref)
+        api.swift.swift_delete_object(self._request,
+            container,
+            obj.ref)
 
 
 def swift_create_temp_url_key(request):
-    """Assigns a secret key for generating temporary URLs to the object store."""
+    """Assigns a secret key for generating temporary Swift URLs."""
     try:
         secret = base64.b64encode(os.urandom(32))
     except Exception as e:
-        LOG.exception("Error generating temp URL key: %s" % e)
+        LOG.exception("Error generating temp URL key: {0}".format(e))
         raise CryptoError("Failed to generate temporary URL key")
 
     headers = { TEMP_URL_KEY_METADATA_HDR: secret }
@@ -310,7 +417,7 @@ def swift_create_temp_url_key(request):
 
 
 def swift_get_temp_url_key(request):
-    """Retrieves the secret key for generating temporary URLs to the object store."""
+    """Retrieves the secret key for generating temporary Swift URLs."""
     secret = None
     metadata = api.swift.swift_api(request).head_account()
     if TEMP_URL_KEY_METADATA_HDR.lower() in metadata:
