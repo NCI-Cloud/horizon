@@ -74,7 +74,7 @@ class VLConfigForm(forms.SelfHandlingForm):
     def __init__(self, request, *args, **kwargs):
         super(VLConfigForm, self).__init__(request, *args, **kwargs)
         self.saved_params = {}
-        self.key_store = ncicrypto.PrivateKeyStore(request)
+        self.stash = ncicrypto.CryptoStash(request)
 
         obj = None
         try:
@@ -95,7 +95,7 @@ class VLConfigForm(forms.SelfHandlingForm):
                 LOG.debug("Parsing project configuration")
                 self.saved_params = json.loads(obj.data)
         except ValueError as e:
-            LOG.exception("Error parsing project configuration: %s" % e)
+            LOG.exception("Error parsing project configuration: {0}".format(e))
             messages.error(request, str(e))
             # NB: Can't use "self.api_error()" here since form not yet validated.
             msg = _("Configuration data is corrupt and cannot be loaded.")
@@ -107,26 +107,37 @@ class VLConfigForm(forms.SelfHandlingForm):
                 msg = _("No existing project configuration found.")
                 self.set_warning(msg)
                 self.fields["puppet_env"].initial = "production"
-                self.fields["repo_path"].initial = "p/%s/puppet.git" % request.user.project_name
+                self.fields["repo_path"].initial = "p/{0}/puppet.git".format(request.user.project_name)
             return
 
         for k, v in self.saved_params.iteritems():
             if (k in self.fields) and not k.startswith("repo_key"):
                 self.fields[k].initial = v
 
-        if self.saved_params.get("repo_key"):
-            self.fields["repo_key_create"].initial = False
-
+        partial_load = False
+        if self.saved_params.get("stash"):
             try:
-                key = self.key_store.load(self.saved_params["repo_key"])
-                self.fields["repo_key_public"].initial = key.ssh_publickey()
-                self.fields["repo_key_fp"].initial = key.ssh_fingerprint()
+                self.stash.init_params(self.saved_params["stash"])
             except:
                 exceptions.handle(request)
-                # NB: Can't use "self.api_error()" here since form not yet validated.
-                msg = _("Failed to load deployment key.")
-                self.set_warning(msg)
-                key = None
+                partial_load = True
+            else:
+                if self.saved_params.get("repo_key"):
+                    self.fields["repo_key_create"].initial = False
+
+                    if request.method == "GET":
+                        try:
+                            key = self.stash.load_private_key(self.saved_params["repo_key"])
+                            self.fields["repo_key_public"].initial = key.ssh_publickey()
+                            self.fields["repo_key_fp"].initial = key.ssh_fingerprint()
+                        except:
+                            exceptions.handle(request)
+                            partial_load = True
+
+        if partial_load:
+            # NB: Can't use "self.api_error()" here since form not yet validated.
+            msg = _("The project configuration was only partially loaded.")
+            self.set_warning(msg)
 
     def clean(self):
         data = super(VLConfigForm, self).clean()
@@ -175,12 +186,23 @@ class VLConfigForm(forms.SelfHandlingForm):
             self.api_error(msg)
             return False
 
+        if not self.stash.initialised:
+            LOG.debug("Configuring crypto stash")
+            try:
+                self.stash.init_params()
+                new_params["stash"] = self.stash.params
+            except:
+                exceptions.handle(request)
+                msg = _("Failed to setup crypto stash.")
+                self.api_error(msg)
+                return False
+
         new_key = None
         if data.get("repo_key_create", False):
-            LOG.debug("Generating new SSH key")
+            LOG.debug("Generating new deployment key")
             try:
-                new_key = self.key_store.generate()
-                new_params["repo_key"] = new_key.get_ref()
+                new_key = self.stash.create_private_key()
+                new_params["repo_key"] = new_key.metadata()
             except:
                 exceptions.handle(request)
                 msg = _("Failed to generate deployment key.")
@@ -193,7 +215,8 @@ class VLConfigForm(forms.SelfHandlingForm):
             try:
                 try:
                     if self.saved_params.get("revision"):
-                        backup_name = "%s_%s" % (VL_PROJECT_CONFIG_OBJ, self.saved_params["revision"])
+                        backup_name = "{0}_{1}".format(VL_PROJECT_CONFIG_OBJ,
+                            self.saved_params["revision"])
                         if not api.swift.swift_object_exists(request, container, backup_name):
                             LOG.debug("Backing up current project configuration")
                             api.swift.swift_copy_object(request,
@@ -214,7 +237,7 @@ class VLConfigForm(forms.SelfHandlingForm):
                     try:
                         if new_key:
                             LOG.debug("Rolling back SSH key generation")
-                            self.key_store.delete(new_key.get_ref())
+                            self.stash.delete(new_key)
                     except:
                         exceptions.handle(request)
                         msg = _("Failed to rollback new deployment key.")

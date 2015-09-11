@@ -645,8 +645,6 @@ class BootstrapConfigAction(workflows.Action):
         label=_("Puppet Action"),
         required=False,
         choices=[
-            ("apply", _("Apply")),
-            ("r10k-deploy", _("R10k Deploy")),
             ("", _("None")),
         ],
         initial="",
@@ -706,9 +704,14 @@ class BootstrapConfigAction(workflows.Action):
                     msg = _("VL project configuration is corrupt.")
                     messages.warning(request, msg)
 
-                if project_cfg is not None:
-                    self.fields["puppet_action"].initial = "apply"
+                if project_cfg:
                     self.fields["puppet_env"].initial = project_cfg.get("puppet_env", "")
+                    if project_cfg.get("repo_key"):
+                        self.fields["puppet_action"].choices += [
+                            ("apply", _("Apply")),
+                            ("r10k-deploy", _("R10k Deploy")),
+                        ]
+                        self.fields["puppet_action"].initial = "apply"
 
     def clean(self):
         data = super(BootstrapConfigAction, self).clean()
@@ -870,11 +873,12 @@ class NCILaunchInstance(base_mod.LaunchInstance):
 
             repo_cfg = puppet_cfg.setdefault("repo", {})
             repo_cfg["path"] = project_cfg.get("repo_path", "")
+
             try:
-                if "repo_key" in project_cfg:
-                    ks = ncicrypto.PrivateKeyStore(request)
-                    key = ks.load(project_cfg["repo_key"])
-                    repo_cfg["key"] = key.cloud_config_dict()
+                stash = ncicrypto.CryptoStash(request,
+                    project_cfg.get("stash") or {})
+                key = stash.load_private_key(project_cfg.get("repo_key"))
+                repo_cfg["key"] = key.cloud_config_dict()
             except:
                 exceptions.handle(request)
                 msg = _("Failed to load deployment key.")
