@@ -16,8 +16,17 @@
 #    under the License.
 #
 
+from django.utils.translation import ugettext_lazy as _
+
+
 REPO_PATH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*\.git$"
 REPO_BRANCH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*$"
+
+PUPPET_ACTION_CHOICES = [
+    ("apply", _("Apply")),
+    ("r10k-deploy", _("R10k Deploy")),
+    ("none", _("None")),
+]
 
 # Swift paths
 NCI_PVT_CONTAINER_PREFIX = "nci-private-"

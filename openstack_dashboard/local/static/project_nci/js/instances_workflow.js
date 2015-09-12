@@ -233,11 +233,11 @@ horizon.nci_instance_bootstrap = {
     puppet_action_select.change(function(evt) {
       var el = $(this);
       var puppet_env_field = $("#id_puppet_env").closest("div.form-field");
-      if (el.val()) {
-        puppet_env_field.removeClass("hide");
+      if (el.val() === "none") {
+        puppet_env_field.addClass("hide");
       }
       else {
-        puppet_env_field.addClass("hide");
+        puppet_env_field.removeClass("hide");
       }
     });
 
