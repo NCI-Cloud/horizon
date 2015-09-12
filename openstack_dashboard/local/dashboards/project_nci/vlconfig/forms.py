@@ -39,6 +39,12 @@ LOG = logging.getLogger(__name__)
 
 
 class VLConfigForm(forms.SelfHandlingForm):
+    puppet_action = forms.ChoiceField(
+        label=_("Default Puppet Action"),
+        required=True,
+        choices=[("auto", _("Automatic"))] + PUPPET_ACTION_CHOICES,
+        help_text=_("Default Puppet command to execute.  This value can be overridden in the launch instance dialog."))
+
     puppet_env = forms.RegexField(
         label=_("Default Puppet Environment"),
         required=True,
@@ -106,6 +112,7 @@ class VLConfigForm(forms.SelfHandlingForm):
             if request.method == "GET":
                 msg = _("No existing project configuration found.")
                 self.set_warning(msg)
+                self.fields["puppet_action"].initial = "auto"
                 self.fields["puppet_env"].initial = "production"
                 self.fields["repo_path"].initial = "p/{0}/puppet.git".format(request.user.project_name)
             return
@@ -150,6 +157,10 @@ class VLConfigForm(forms.SelfHandlingForm):
                 msg = _("Saved configuration has changed since form was loaded.")
             else:
                 msg = _("Failed to retrieve existing configuration for update.")
+            raise forms.ValidationError(msg)
+
+        if (data.get("puppet_action", "none") != "none") and not (data.get("repo_key_create", False) or self.saved_params.get("repo_key")):
+            msg = _("The selected Puppet action requires a deployment key.")
             raise forms.ValidationError(msg)
 
         return data

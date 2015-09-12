@@ -643,11 +643,9 @@ class SetNetwork(workflows.Step):
 class BootstrapConfigAction(workflows.Action):
     puppet_action = forms.ChoiceField(
         label=_("Puppet Action"),
-        required=False,
-        choices=[
-            ("", _("None")),
-        ],
-        initial="",
+        required=True,
+        choices=[x for x in PUPPET_ACTION_CHOICES if x[0] == "none"],
+        initial="none",
         help_text=_("Puppet command to execute."))
 
     puppet_env = forms.RegexField(
@@ -707,16 +705,20 @@ class BootstrapConfigAction(workflows.Action):
                 if project_cfg:
                     self.fields["puppet_env"].initial = project_cfg.get("puppet_env", "")
                     if project_cfg.get("repo_key"):
-                        self.fields["puppet_action"].choices += [
-                            ("apply", _("Apply")),
-                            ("r10k-deploy", _("R10k Deploy")),
-                        ]
+                        self.fields["puppet_action"].choices = PUPPET_ACTION_CHOICES
                         self.fields["puppet_action"].initial = "apply"
+
+                    default_action = project_cfg.get("puppet_action", "auto")
+                    if default_action != "auto":
+                        avail_actions = [x[0] for x in self.fields["puppet_action"].choices]
+                        if default_action in avail_actions:
+                            self.fields["puppet_action"].initial = default_action
+
 
     def clean(self):
         data = super(BootstrapConfigAction, self).clean()
 
-        if data.get("puppet_action") and not data.get("puppet_env"):
+        if (data.get("puppet_action", "none") != "none") and not data.get("puppet_env"):
             msg = _("An environment name is required for the selected Puppet action.")
             raise forms.ValidationError(msg)
 
@@ -845,7 +847,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
     @sensitive_variables("context")
     def handle(self, request, context):
         cloud_cfg = {}
-        if context["puppet_action"]:
+        if context["puppet_action"] != "none":
             # Load the project's VL configuration.
             try:
                 obj = api.swift.swift_get_object(request,
