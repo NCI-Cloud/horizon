@@ -80,6 +80,7 @@ class VLConfigForm(forms.SelfHandlingForm):
     def __init__(self, request, *args, **kwargs):
         super(VLConfigForm, self).__init__(request, *args, **kwargs)
         self.saved_params = {}
+        self.cfg_timestamp = None
         self.stash = ncicrypto.CryptoStash(request)
 
         obj = None
@@ -89,6 +90,21 @@ class VLConfigForm(forms.SelfHandlingForm):
             if api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ):
                 LOG.debug("Loading project configuration")
                 obj = api.swift.swift_get_object(request, container, VL_PROJECT_CONFIG_OBJ)
+                self.cfg_timestamp = obj.timestamp
+                if self.cfg_timestamp is None:
+                    # Workaround bug in Ceph which doesn't return the "X-Timestamp"
+                    # header.  This appears to be fixed in Ceph 0.87.1 (Giant).
+                    #   http://tracker.ceph.com/issues/8911
+                    #   https://github.com/ceph/ceph/commit/8c573c8826096d90dc7dfb9fd0126b9983bc15eb
+                    metadata = api.swift.swift_api(request).head_object(container, VL_PROJECT_CONFIG_OBJ)
+                    try:
+                        lastmod = metadata["last-modified"]
+                        # https://github.com/ceph/ceph/blob/v0.80.6/src/rgw/rgw_rest.cc#L325
+                        dt = datetime.datetime.strptime(lastmod, "%a, %d %b %Y %H:%M:%S %Z")
+                        assert dt.utcoffset() is None
+                        self.cfg_timestamp = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    except Exception as e:
+                        LOG.exception("Error getting project config timestamp: {0}".format(e))
         except:
             exceptions.handle(request)
             # NB: Can't use "self.api_error()" here since form not yet validated.
@@ -225,9 +241,9 @@ class VLConfigForm(forms.SelfHandlingForm):
                 new_params["revision"] = datetime.datetime.utcnow().isoformat()
                 obj_data = json.dumps(new_params)
                 try:
-                    if self.saved_params.get("revision"):
+                    if self.cfg_timestamp:
                         backup_name = "{0}_{1}".format(VL_PROJECT_CONFIG_OBJ,
-                            self.saved_params["revision"])
+                            self.cfg_timestamp)
                         if not api.swift.swift_object_exists(request, container, backup_name):
                             LOG.debug("Backing up current project configuration")
                             api.swift.swift_copy_object(request,
@@ -235,6 +251,9 @@ class VLConfigForm(forms.SelfHandlingForm):
                                 VL_PROJECT_CONFIG_OBJ,
                                 container,
                                 backup_name)
+                    elif api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ):
+                        msg = _("Couldn't backup previous configuration.  No timestamp available.")
+                        messages.warning(request, msg)
 
                     LOG.debug("Saving project configuration")
                     api.swift.swift_api(request).put_object(container,
