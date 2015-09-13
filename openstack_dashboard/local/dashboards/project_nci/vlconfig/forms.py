@@ -209,21 +209,21 @@ class VLConfigForm(forms.SelfHandlingForm):
                 return False
 
         new_key = None
-        if data.get("repo_key_create", False):
-            LOG.debug("Generating new deployment key")
-            try:
-                new_key = self.stash.create_private_key()
-                new_params["repo_key"] = new_key.metadata()
-            except:
-                exceptions.handle(request)
-                msg = _("Failed to generate deployment key.")
-                self.api_error(msg)
-                return False
+        try:
+            if data.get("repo_key_create", False):
+                LOG.debug("Generating new deployment key")
+                try:
+                    new_key = self.stash.create_private_key()
+                    new_params["repo_key"] = new_key.metadata()
+                except:
+                    exceptions.handle(request)
+                    msg = _("Failed to generate deployment key.")
+                    self.api_error(msg)
+                    return False
 
-        if new_params != self.saved_params:
-            new_params["revision"] = datetime.datetime.utcnow().isoformat()
-            obj_data = json.dumps(new_params)
-            try:
+            if new_params != self.saved_params:
+                new_params["revision"] = datetime.datetime.utcnow().isoformat()
+                obj_data = json.dumps(new_params)
                 try:
                     if self.saved_params.get("revision"):
                         backup_name = "{0}_{1}".format(VL_PROJECT_CONFIG_OBJ,
@@ -242,27 +242,21 @@ class VLConfigForm(forms.SelfHandlingForm):
                         obj_data,
                         content_type="application/json")
                 except:
-                    # Python 2 doesn't have exception chaining so we have to
-                    # save the original context to re-raise it below.
-                    saved_ex = sys.exc_info()
-                    try:
-                        if new_key:
-                            LOG.debug("Rolling back SSH key generation")
-                            self.stash.delete(new_key)
-                    except:
-                        exceptions.handle(request)
-                        msg = _("Failed to rollback new deployment key.")
-                        messages.warning(request, msg)
+                    exceptions.handle(request)
+                    msg = _("Failed to save configuration.")
+                    self.api_error(msg)
+                    return False
 
-                    raise saved_ex[0], saved_ex[1], saved_ex[2]
-            except:
-                exceptions.handle(request)
-                msg = _("Failed to save configuration.")
-                self.api_error(msg)
-                return False
-
-            self.saved_params = new_params
-            messages.success(request, _("Configuration saved."))
+                new_key = None
+                self.saved_params = new_params
+                messages.success(request, _("Configuration saved."))
+        finally:
+            try:
+                if new_key:
+                    LOG.debug("Rolling back deployment key generation")
+                    self.stash.delete(new_key)
+            except Exception as e:
+                LOG.exception("Error deleting orphaned deployment key: {0}".format(e))
 
         return True
 
