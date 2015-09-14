@@ -16,7 +16,20 @@
 #    under the License.
 #
 
+import os
+
+from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
+
+
+__all__ = (
+    "REPO_PATH_REGEX",
+    "REPO_BRANCH_REGEX",
+    "PUPPET_ACTION_CHOICES",
+    "NCI_PVT_CONTAINER_PREFIX",
+    "nci_private_container_name",
+    "nci_vl_project_config_name",
+)
 
 
 REPO_PATH_REGEX = r"^[a-zA-Z][-a-zA-Z0-9_./]*\.git$"
@@ -28,13 +41,24 @@ PUPPET_ACTION_CHOICES = [
     ("none", _("None")),
 ]
 
-# Swift paths
 NCI_PVT_CONTAINER_PREFIX = "nci-private-"
-VL_PROJECT_CONFIG_OBJ = "project-config"
 
 
 def nci_private_container_name(request):
     return NCI_PVT_CONTAINER_PREFIX + request.user.project_id
+
+
+def nci_vl_project_config_name():
+    if hasattr(settings, "NCI_VL_PROJECT_CFG_SUFFIX"):
+        suffix = settings.NCI_VL_PROJECT_CFG_SUFFIX
+    else:
+        suffix = os.uname()[1].split(".")[0]
+        assert suffix
+
+    if suffix:
+        return "project-config-{0}".format(suffix)
+    else:
+        return "project-config"
 
 
 # vim:ts=4 et sw=4 sts=4:
