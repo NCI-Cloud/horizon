@@ -679,14 +679,19 @@ class BootstrapConfigAction(workflows.Action):
         is_vl = False
         try:
             container = nci_private_container_name(request)
-            is_vl = api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ)
+            config_obj_name = nci_vl_project_config_name()
+            is_vl = api.swift.swift_object_exists(request,
+                container,
+                config_obj_name)
         except:
             exceptions.handle(request)
 
         if is_vl:
             obj = None
             try:
-                obj = api.swift.swift_get_object(request, container, VL_PROJECT_CONFIG_OBJ)
+                obj = api.swift.swift_get_object(request,
+                    container,
+                    config_obj_name)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -852,7 +857,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             try:
                 obj = api.swift.swift_get_object(request,
                     nci_private_container_name(request),
-                    VL_PROJECT_CONFIG_OBJ)
+                    nci_vl_project_config_name())
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")

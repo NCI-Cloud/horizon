@@ -87,16 +87,17 @@ class VLConfigForm(forms.SelfHandlingForm):
         try:
             LOG.debug("Checking if project configuration exists")
             container = nci_private_container_name(request)
-            if api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ):
+            config_obj_name = nci_vl_project_config_name()
+            if api.swift.swift_object_exists(request, container, config_obj_name):
                 LOG.debug("Loading project configuration")
-                obj = api.swift.swift_get_object(request, container, VL_PROJECT_CONFIG_OBJ)
+                obj = api.swift.swift_get_object(request, container, config_obj_name)
                 self.cfg_timestamp = obj.timestamp
                 if self.cfg_timestamp is None:
                     # Workaround bug in Ceph which doesn't return the "X-Timestamp"
                     # header.  This appears to be fixed in Ceph 0.87.1 (Giant).
                     #   http://tracker.ceph.com/issues/8911
                     #   https://github.com/ceph/ceph/commit/8c573c8826096d90dc7dfb9fd0126b9983bc15eb
-                    metadata = api.swift.swift_api(request).head_object(container, VL_PROJECT_CONFIG_OBJ)
+                    metadata = api.swift.swift_api(request).head_object(container, config_obj_name)
                     try:
                         lastmod = metadata["last-modified"]
                         # https://github.com/ceph/ceph/blob/v0.80.6/src/rgw/rgw_rest.cc#L325
@@ -241,23 +242,24 @@ class VLConfigForm(forms.SelfHandlingForm):
                 new_params["revision"] = datetime.datetime.utcnow().isoformat()
                 obj_data = json.dumps(new_params)
                 try:
+                    config_obj_name = nci_vl_project_config_name()
                     if self.cfg_timestamp:
-                        backup_name = "{0}_{1}".format(VL_PROJECT_CONFIG_OBJ,
+                        backup_name = "{0}_{1}".format(config_obj_name,
                             self.cfg_timestamp)
                         if not api.swift.swift_object_exists(request, container, backup_name):
                             LOG.debug("Backing up current project configuration")
                             api.swift.swift_copy_object(request,
                                 container,
-                                VL_PROJECT_CONFIG_OBJ,
+                                config_obj_name,
                                 container,
                                 backup_name)
-                    elif api.swift.swift_object_exists(request, container, VL_PROJECT_CONFIG_OBJ):
+                    elif api.swift.swift_object_exists(request, container, config_obj_name):
                         msg = _("Couldn't backup previous configuration.  No timestamp available.")
                         messages.warning(request, msg)
 
                     LOG.debug("Saving project configuration")
                     api.swift.swift_api(request).put_object(container,
-                        VL_PROJECT_CONFIG_OBJ,
+                        config_obj_name,
                         obj_data,
                         content_type="application/json")
                 except:
