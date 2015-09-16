@@ -20,6 +20,7 @@ import datetime
 import json
 import logging
 #import pdb ## DEBUG
+import re
 import sys
 import uuid
 
@@ -36,6 +37,8 @@ from openstack_dashboard.local.nci.constants import *
 
 
 LOG = logging.getLogger(__name__)
+
+SPECIAL_FIELDS_REGEX = r"(repo_key|eyaml)"
 
 
 class VLConfigForm(forms.SelfHandlingForm):
@@ -72,6 +75,22 @@ class VLConfigForm(forms.SelfHandlingForm):
         required=False,
         initial=True,
         help_text=_("Generates a new SSH key for deploying the Puppet configuration repository."))
+
+    eyaml_cert_fp = forms.CharField(
+        widget=forms.TextInput(attrs={"readonly": True}),
+        label=_("Hiera eyaml Certificate Fingerprint"),
+        required=False)
+
+    eyaml_key_fp = forms.CharField(
+        widget=forms.TextInput(attrs={"readonly": True}),
+        label=_("Hiera eyaml Key Fingerprint"),
+        required=False)
+
+    eyaml_create = forms.BooleanField(
+        label=_("Generate New Hiera eyaml Certificate/Key Pair"),
+        required=False,
+        initial=True,
+        help_text=_("Generates a new certificate/key pair for encrypting data in Hiera."))
 
     revision = forms.CharField(
         widget=forms.HiddenInput(),
@@ -135,7 +154,7 @@ class VLConfigForm(forms.SelfHandlingForm):
             return
 
         for k, v in self.saved_params.iteritems():
-            if (k in self.fields) and not k.startswith("repo_key"):
+            if (k in self.fields) and not re.match(SPECIAL_FIELDS_REGEX, k):
                 self.fields[k].initial = v
 
         partial_load = False
@@ -158,6 +177,28 @@ class VLConfigForm(forms.SelfHandlingForm):
                             exceptions.handle(request)
                             partial_load = True
 
+                if self.saved_params.get("eyaml_cert"):
+                    self.fields["eyaml_create"].initial = False
+
+                    if request.method == "GET":
+                        try:
+                            cert = self.stash.load_x509_cert(self.saved_params["eyaml_cert"])
+                            self.fields["eyaml_cert_fp"].initial = cert.fingerprint()
+                        except:
+                            exceptions.handle(request)
+                            partial_load = True
+
+                if self.saved_params.get("eyaml_key"):
+                    self.fields["eyaml_create"].initial = False
+
+                    if request.method == "GET":
+                        try:
+                            key = self.stash.load_private_key(self.saved_params["eyaml_key"])
+                            self.fields["eyaml_key_fp"].initial = key.fingerprint()
+                        except:
+                            exceptions.handle(request)
+                            partial_load = True
+
         if partial_load:
             # NB: Can't use "self.api_error()" here since form not yet validated.
             msg = _("The project configuration was only partially loaded.")
@@ -176,9 +217,13 @@ class VLConfigForm(forms.SelfHandlingForm):
                 msg = _("Failed to retrieve existing configuration for update.")
             raise forms.ValidationError(msg)
 
-        if (data.get("puppet_action", "none") != "none") and not (data.get("repo_key_create", False) or self.saved_params.get("repo_key")):
-            msg = _("The selected Puppet action requires a deployment key.")
-            raise forms.ValidationError(msg)
+        if data.get("puppet_action", "none") != "none":
+            if not (data.get("repo_key_create", False) or self.saved_params.get("repo_key")):
+                msg = _("The selected Puppet action requires a deployment key.")
+                raise forms.ValidationError(msg)
+            elif not (data.get("eyaml_create", False) or (self.saved_params.get("eyaml_cert") and self.saved_params.get("eyaml_key"))):
+                msg = _("The selected Puppet action requires a Hiera eyaml certificate/key pair.")
+                raise forms.ValidationError(msg)
 
         return data
 
@@ -187,7 +232,7 @@ class VLConfigForm(forms.SelfHandlingForm):
         if "repo_branch" in new_params:
             del new_params["repo_branch"]
 
-        new_params.update([(k, v) for k, v in data.iteritems() if not k.startswith("repo_key")])
+        new_params.update([(k, v) for k, v in data.iteritems() if not re.match(SPECIAL_FIELDS_REGEX, k)])
 
         try:
             # Make sure the container exists first.
@@ -225,16 +270,41 @@ class VLConfigForm(forms.SelfHandlingForm):
                 self.api_error(msg)
                 return False
 
-        new_key = None
+        new_repo_key = None
+        new_eyaml_key = None
+        new_eyaml_cert = None
         try:
             if data.get("repo_key_create", False):
                 LOG.debug("Generating new deployment key")
                 try:
-                    new_key = self.stash.create_private_key()
-                    new_params["repo_key"] = new_key.metadata()
+                    new_repo_key = self.stash.create_private_key()
+                    new_params["repo_key"] = new_repo_key.metadata()
                 except:
                     exceptions.handle(request)
                     msg = _("Failed to generate deployment key.")
+                    self.api_error(msg)
+                    return False
+
+            if data.get("eyaml_create", False):
+                LOG.debug("Generating new eyaml key")
+                try:
+                    new_eyaml_key = self.stash.create_private_key()
+                    new_params["eyaml_key"] = new_eyaml_key.metadata()
+                except:
+                    exceptions.handle(request)
+                    msg = _("Failed to generate eyaml key.")
+                    self.api_error(msg)
+                    return False
+
+                LOG.debug("Generating new eyaml certificate")
+                try:
+                    new_eyaml_cert = self.stash.create_x509_cert(new_eyaml_key,
+                        "hiera-eyaml-{0}".format(request.user.project_name),
+                        100 * 365)
+                    new_params["eyaml_cert"] = new_eyaml_cert.metadata()
+                except:
+                    exceptions.handle(request)
+                    msg = _("Failed to generate eyaml certificate.")
                     self.api_error(msg)
                     return False
 
@@ -268,16 +338,32 @@ class VLConfigForm(forms.SelfHandlingForm):
                     self.api_error(msg)
                     return False
 
-                new_key = None
+                new_repo_key = None
+                new_eyaml_key = None
+                new_eyaml_cert = None
                 self.saved_params = new_params
                 messages.success(request, _("Configuration saved."))
         finally:
             try:
-                if new_key:
+                if new_repo_key:
                     LOG.debug("Rolling back deployment key generation")
-                    self.stash.delete(new_key)
+                    self.stash.delete(new_repo_key)
             except Exception as e:
                 LOG.exception("Error deleting orphaned deployment key: {0}".format(e))
+
+            try:
+                if new_eyaml_key:
+                    LOG.debug("Rolling back eyaml key generation")
+                    self.stash.delete(new_eyaml_key)
+            except Exception as e:
+                LOG.exception("Error deleting orphaned eyaml key: {0}".format(e))
+
+            try:
+                if new_eyaml_cert:
+                    LOG.debug("Rolling back eyaml certificate generation")
+                    self.stash.delete(new_eyaml_cert)
+            except Exception as e:
+                LOG.exception("Error deleting orphaned eyaml certificate: {0}".format(e))
 
         return True
 

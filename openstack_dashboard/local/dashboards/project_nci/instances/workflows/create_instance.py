@@ -709,7 +709,7 @@ class BootstrapConfigAction(workflows.Action):
 
                 if project_cfg:
                     self.fields["puppet_env"].initial = project_cfg.get("puppet_env", "")
-                    if project_cfg.get("repo_key"):
+                    if project_cfg.get("repo_key") and project_cfg.get("eyaml_key") and project_cfg.get("eyaml_cert"):
                         self.fields["puppet_action"].choices = PUPPET_ACTION_CHOICES
                         self.fields["puppet_action"].initial = "apply"
 
@@ -881,14 +881,26 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             repo_cfg = puppet_cfg.setdefault("repo", {})
             repo_cfg["path"] = project_cfg.get("repo_path", "")
 
+            eyaml_cfg = puppet_cfg.setdefault("eyaml", {})
+
             try:
+                msg = _("Failed to initialise crypto stash.")
                 stash = ncicrypto.CryptoStash(request,
                     project_cfg.get("stash") or {})
+
+                msg = _("Failed to load deployment key.")
                 key = stash.load_private_key(project_cfg.get("repo_key"))
                 repo_cfg["key"] = key.cloud_config_dict()
+
+                msg = _("Failed to load eyaml key.")
+                key = stash.load_private_key(project_cfg.get("eyaml_key"))
+                eyaml_cfg["key"] = key.cloud_config_dict()
+
+                msg = _("Failed to load eyaml certificate.")
+                cert = stash.load_x509_cert(project_cfg.get("eyaml_cert"))
+                eyaml_cfg["cert"] = cert.cloud_config_dict()
             except:
                 exceptions.handle(request)
-                msg = _("Failed to load deployment key.")
                 messages.error(request, msg)
                 return False
 
