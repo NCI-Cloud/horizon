@@ -18,6 +18,7 @@
 
 import base64
 import binascii
+import datetime
 import hashlib
 import hmac
 import logging
@@ -35,12 +36,16 @@ import urlparse
 from StringIO import StringIO
 
 try:
+    from cryptography import x509
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives.serialization import BestAvailableEncryption, Encoding, load_pem_private_key, NoEncryption, PrivateFormat
+    from cryptography.x509.oid import NameOID
     USE_NEW_CRYPTO_LIB=True
 except:
     from OpenSSL import crypto
+    from Crypto.PublicKey import RSA as pycrypto_RSA
     USE_NEW_CRYPTO_LIB=False
 
 from django.conf import settings
@@ -57,7 +62,8 @@ TEMP_URL_KEY_METADATA_HDR = "X-Account-Meta-Temp-URL-Key"
 
 
 class CryptoStashItem(object):
-    def __init__(self, stash, metadata):
+    def __init__(self, impl, stash, metadata):
+        self._impl = impl
         self._stash = stash
 
         if metadata is None:
@@ -142,8 +148,8 @@ class CryptoStashItem(object):
 
 
 class CryptoStashItemWithPwd(CryptoStashItem):
-    def __init__(self, stash, metadata):
-        super(CryptoStashItemWithPwd, self).__init__(stash, metadata)
+    def __init__(self, impl, stash, metadata):
+        super(CryptoStashItemWithPwd, self).__init__(impl, stash, metadata)
 
     @property
     def password(self):
@@ -166,10 +172,9 @@ class CryptoStashItemWithPwd(CryptoStashItem):
 
 
 class PrivateKey(CryptoStashItemWithPwd):
-    def __init__(self, rsa_obj, stash, metadata):
-        super(PrivateKey, self).__init__(stash, metadata)
-        self._rsa_obj = rsa_obj
-        self._ssh_key_cache = None
+    def __init__(self, impl, stash, metadata):
+        super(PrivateKey, self).__init__(impl, stash, metadata)
+        self._cache = {}
 
     def export(self):
         """Exports the private key in encrypted PEM format."""
@@ -177,52 +182,56 @@ class PrivateKey(CryptoStashItemWithPwd):
 
         try:
             if USE_NEW_CRYPTO_LIB:
-                return self._rsa_obj.private_bytes(Encoding.PEM,
+                return self._impl.private_bytes(Encoding.PEM,
                     PrivateFormat.PKCS8,
                     BestAvailableEncryption(pw))
             else:
                 return crypto.dump_privatekey(crypto.FILETYPE_PEM,
-                    self._rsa_obj,
+                    self._impl,
                     "aes-256-cbc",
                     pw)
         except Exception as e:
             LOG.exception("Error exporting private key (ref {0}): {1}".format(self.ref, e))
             raise CryptoError("Failed to export private key with ref: {0}".format(self.ref))
 
+    def fingerprint(self):
+        """Returns the fingerprint of the PKCS#8 DER key."""
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                der = self._impl.private_bytes(Encoding.DER,
+                    PrivateFormat.PKCS8,
+                    NoEncryption())
+            else:
+                pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, self._impl)
+                # Convert from PEM encoding to PKCS#8 DER.
+                # There isn't a way to do this via the PyOpenSSL API so we
+                # have to use PyCrypto instead.
+                der = pycrypto_RSA.importKey(pem).exportKey('DER', pkcs=8)
+        except Exception as e:
+            LOG.exception("Error generating key fingerprint (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to get fingerprint for key with ref: {0}".format(self.ref))
+
+        fp = hashlib.sha1(der).digest()
+        return ":".join([binascii.hexlify(x) for x in fp])
+
     @property
     def _ssh_key(self):
-        if self._ssh_key_cache is None:
+        if "ssh_key" not in self._cache:
             if USE_NEW_CRYPTO_LIB:
-                pem = self._rsa_obj.private_bytes(Encoding.PEM,
+                pem = self._impl.private_bytes(Encoding.PEM,
                     PrivateFormat.TraditionalOpenSSL,
                     NoEncryption())
             else:
-                pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, self._rsa_obj)
+                pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, self._impl)
                 if "BEGIN RSA PRIVATE KEY" not in pem:
                     # Convert from PKCS#8 into "traditional" RSA format.
-                    # There isn't a way to do this via the PyOpenSSL API.
-                    args = (
-                        "/usr/bin/openssl",
-                        "rsa",
-                        "-inform",
-                        "PEM",
-                        "-outform",
-                        "PEM",
-                    )
-                    proc = subprocess.Popen(args,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE)
-                    pem, err = proc.communicate(pem)
-                    rc = proc.poll()
-                    if rc:
-                        if err:
-                            LOG.error("Subprocess error output: {0}".format(err.strip()))
-                        raise subprocess.CalledProcessError(rc, args[0])
+                    # There isn't a way to do this via the PyOpenSSL API so we
+                    # have to use PyCrypto instead.
+                    pem = pycrypto_RSA.importKey(pem).exportKey('PEM', pkcs=1)
 
-            self._ssh_key_cache = paramiko.rsakey.RSAKey(file_obj=StringIO(pem))
+            self._cache["ssh_key"] = paramiko.rsakey.RSAKey(file_obj=StringIO(pem))
 
-        return self._ssh_key_cache
+        return self._cache["ssh_key"]
 
     def ssh_publickey(self):
         """Exports the public key component in OpenSSH format."""
@@ -245,6 +254,34 @@ class PrivateKey(CryptoStashItemWithPwd):
             raise CryptoError("Failed to get SSH fingerprint for key with ref: {0}".format(self.ref))
 
         return ":".join([binascii.hexlify(x) for x in fp])
+
+
+class Certificate(CryptoStashItem):
+    def __init__(self, impl, stash, metadata):
+        super(Certificate, self).__init__(impl, stash, metadata)
+
+    def export(self):
+        """Exports the certificate in PEM format."""
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                return self._impl.public_bytes(Encoding.PEM)
+            else:
+                return crypto.dump_certificate(crypto.FILETYPE_PEM, self._impl)
+        except Exception as e:
+            LOG.exception("Error exporting certificate (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to export certificate with ref: {0}".format(self.ref))
+
+    def fingerprint(self):
+        """Returns the fingerprint of the certificate."""
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                fp = self._impl.fingerprint(hashes.SHA1())
+                return ":".join([binascii.hexlify(x) for x in fp])
+            else:
+                return self._impl.digest("sha1").lower()
+        except Exception as e:
+            LOG.exception("Error generating certificate fingerprint (ref {0}): {1}".format(self.ref, e))
+            raise CryptoError("Failed to get fingerprint for certificate with ref: {0}".format(self.ref))
 
 
 # TODO: Use Barbican for storage instead of Swift.  However, the following
@@ -338,17 +375,17 @@ class CryptoStash(object):
         """Generates a new private key and saves it in the stash."""
         try:
             if USE_NEW_CRYPTO_LIB:
-                rsa_obj = rsa.generate_private_key(65537,
+                key_impl = rsa.generate_private_key(65537,
                     3072,
                     default_backend())
             else:
-                rsa_obj = crypto.PKey()
-                rsa_obj.generate_key(crypto.TYPE_RSA, 3072)
+                key_impl = crypto.PKey()
+                key_impl.generate_key(crypto.TYPE_RSA, 3072)
         except Exception as e:
             LOG.exception("Error generating new RSA key: {0}".format(e))
             raise CryptoError("Failed to generate new private key")
 
-        key = PrivateKey(rsa_obj, self, None)
+        key = PrivateKey(key_impl, self, None)
         container = nci_private_container_name(self._request)
         api.swift.swift_api(self._request).put_object(container,
             key.ref,
@@ -361,7 +398,7 @@ class CryptoStash(object):
         if not isinstance(metadata, dict):
             raise CryptoError("Metadata missing or invalid type when loading private key")
         key = PrivateKey(None, self, metadata)
-        obj = api.swift.swift_get_object(self._request,
+        swift_obj = api.swift.swift_get_object(self._request,
             nci_private_container_name(self._request),
             key.ref)
 
@@ -369,19 +406,122 @@ class CryptoStash(object):
         try:
             if USE_NEW_CRYPTO_LIB:
                 LOG.debug("Using new cryptography library")
-                key._rsa_obj = load_pem_private_key(obj.data,
+                key._impl = load_pem_private_key(swift_obj.data,
                     pw,
                     default_backend())
             else:
                 LOG.debug("Using old cryptography library")
-                key._rsa_obj = crypto.load_privatekey(crypto.FILETYPE_PEM,
-                    obj.data,
+                key._impl = crypto.load_privatekey(crypto.FILETYPE_PEM,
+                    swift_obj.data,
                     pw)
         except Exception as e:
             LOG.exception("Error loading RSA key: {0}".format(e))
             raise CryptoError("Failed to load private key with ref: {0}".format(key.ref))
 
         return key
+
+    def create_x509_cert(self, key, subject_cn, valid_days):
+        """Returns a new self-signed X.509 certificate in PEM format."""
+        assert isinstance(key, PrivateKey)
+        now = datetime.datetime.utcnow()
+        nvb = now + datetime.timedelta(days=-1)
+        nva = now + datetime.timedelta(days=valid_days)
+
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                builder = x509.CertificateBuilder()
+                builder = builder.serial_number(int(uuid.uuid4()))
+                builder = builder.not_valid_before(nvb)
+                builder = builder.not_valid_after(nva)
+
+                pub_key_impl = key._impl.public_key()
+                builder = builder.public_key(pub_key_impl)
+
+                cn = x509.Name([
+                    x509.NameAttribute(NameOID.COMMON_NAME,
+                        subject_cn if isinstance(subject_cn, six.text_type) else six.u(subject_cn)),
+                ])
+                builder = builder.subject_name(cn)
+                builder = builder.issuer_name(cn)
+
+                builder = builder.add_extension(
+                    x509.BasicConstraints(ca=True, path_length=0),
+                    True)
+                builder = builder.add_extension(
+                    x509.SubjectKeyIdentifier.from_public_key(pub_key_impl),
+                    False)
+                builder = builder.add_extension(
+                    x509.AuthorityKeyIdentifier.from_issuer_public_key(pub_key_impl),
+                    False)
+
+                cert_impl = builder.sign(key._impl,
+                    hashes.SHA256(),
+                    default_backend())
+            else:
+                cert_impl = crypto.X509()
+                cert_impl.set_version(2)
+                cert_impl.set_serial_number(int(uuid.uuid4()))
+                cert_impl.set_notBefore(nvb.strftime("%Y%m%d%H%M%SZ"))
+                cert_impl.set_notAfter(nva.strftime("%Y%m%d%H%M%SZ"))
+                cert_impl.set_pubkey(key._impl)
+
+                subject = cert_impl.get_subject()
+                subject.CN = subject_cn
+                cert_impl.set_issuer(subject)
+
+                cert_impl.add_extensions([
+                    crypto.X509Extension(b"basicConstraints",
+                        True,
+                        b"CA:TRUE, pathlen:0"),
+                    crypto.X509Extension(b"subjectKeyIdentifier",
+                        False,
+                        b"hash",
+                        subject=cert_impl),
+                ])
+
+                # This has to be done after the above since it can't extract
+                # the subject key from the certificate until it's assigned.
+                cert_impl.add_extensions([
+                    crypto.X509Extension(b"authorityKeyIdentifier",
+                        False,
+                        b"keyid:always",
+                        issuer=cert_impl),
+                ])
+
+                cert_impl.sign(key._impl, "sha256")
+        except Exception as e:
+            LOG.exception("Error creating X.509 certificate: {0}".format(e))
+            raise CryptoError("Failed to create X.509 certificate")
+
+        cert = Certificate(cert_impl, self, None)
+        container = nci_private_container_name(self._request)
+        api.swift.swift_api(self._request).put_object(container,
+            cert.ref,
+            cert.export(),
+            content_type="text/plain")
+        return cert
+
+    def load_x509_cert(self, metadata):
+        """Loads an existing certificate from the stash."""
+        if not isinstance(metadata, dict):
+            raise CryptoError("Metadata missing or invalid type when loading certificate")
+        cert = Certificate(None, self, metadata)
+        swift_obj = api.swift.swift_get_object(self._request,
+            nci_private_container_name(self._request),
+            cert.ref)
+
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                cert._impl = x509.load_pem_x509_certificate(swift_obj.data,
+                    default_backend())
+            else:
+                cert._impl = crypto.load_certificate(crypto.FILETYPE_PEM,
+                    swift_obj.data)
+        except Exception as e:
+            LOG.exception("Error loading X.509 certificate: {0}".format(e))
+            raise CryptoError("Failed to load X.509 certificate with ref: {0}".format(cert.ref))
+
+        return cert
 
     def delete(self, obj):
         """Deletes the given item from the stash."""
@@ -419,15 +559,25 @@ def swift_create_temp_url_key(request):
 def swift_get_temp_url_key(request):
     """Retrieves the secret key for generating temporary Swift URLs."""
     secret = None
+    container = nci_private_container_name(request)
     metadata = api.swift.swift_api(request).head_account()
     if TEMP_URL_KEY_METADATA_HDR.lower() in metadata:
         secret = metadata[TEMP_URL_KEY_METADATA_HDR.lower()]
+
+        try:
+            if api.swift.swift_object_exists(request, container, "temp-url-key"):
+                api.swift.swift_delete_object(request,
+                    container,
+                    "temp-url-key")
+        except:
+            pass
     else:
         # See above notes on Ceph workaround.
-        container = nci_private_container_name(request)
         if api.swift.swift_object_exists(request, container, "temp-url-key"):
-            obj = api.swift.swift_get_object(request, container, "temp-url-key")
-            secret = obj.data
+            swift_obj = api.swift.swift_get_object(request,
+                container,
+                "temp-url-key")
+            secret = swift_obj.data
 
     return secret
 
