@@ -4,6 +4,7 @@
 
 {% block form_id %}project_config_form{% endblock %}
 {% block form_action %}{% url 'horizon:project:vlconfig:index' %}{% endblock %}
+{% block form_attrs %}enctype="multipart/form-data"{% endblock %}
 
 {% block modal_id %}project_config_modal{% endblock %}
 {% block modal-header %}{% trans "Project Configuration" %}{% endblock %}
@@ -17,11 +18,23 @@
 <div class="right">
   <h4>{% trans "Warning" %}</h4>
   <p>{% trans "These settings apply to all users in the project.  Please check with NCI Virtual Labs staff before making any changes." %}</p>
-  <p>{% trans "Changing the Hiera eyaml certificate/key pair will cause any existing encrypted data to become unreadable." %}</p>
+  <p>{% trans "Changing the Hiera eyaml certificate/key pair will cause any data encrypted with the existing key pair to become unreadable." %}</p>
 </div>
 {% endblock %}
 
 {% block modal-footer %}
 <button type="submit" class="btn btn-primary">{% trans "Save" %}</button>
 {% if hide %}<a href="{% url 'horizon:project:vlconfig:index' %}" class="btn secondary cancel close">{% trans "Cancel" %}</a>{% endif %}
+
+<script src="{{ STATIC_URL }}project_nci/js/vl_config.js" type="text/javascript" charset="utf-8"></script>
+
+<script>
+  if (typeof horizon.nci_vl_config !== 'undefined') {
+    horizon.nci_vl_config.init();
+  } else {
+    addHorizonLoadEvent(function() {
+      horizon.nci_vl_config.init();
+    });
+  }
+</script>
 {% endblock %}

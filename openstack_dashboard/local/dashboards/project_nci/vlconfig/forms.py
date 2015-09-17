@@ -71,26 +71,39 @@ class VLConfigForm(forms.SelfHandlingForm):
         required=False)
 
     repo_key_create = forms.BooleanField(
-        label=_("Generate New Deployment Key"),
+        label=_("Create New Deployment Key"),
         required=False,
         initial=True,
         help_text=_("Generates a new SSH key for deploying the Puppet configuration repository."))
-
-    eyaml_cert_fp = forms.CharField(
-        widget=forms.TextInput(attrs={"readonly": True}),
-        label=_("Hiera eyaml Certificate Fingerprint"),
-        required=False)
 
     eyaml_key_fp = forms.CharField(
         widget=forms.TextInput(attrs={"readonly": True}),
         label=_("Hiera eyaml Key Fingerprint"),
         required=False)
 
-    eyaml_create = forms.BooleanField(
-        label=_("Generate New Hiera eyaml Certificate/Key Pair"),
+    eyaml_key_upload = forms.FileField(
+        label=_("Import Hiera eyaml Key"),
+        required=False)
+
+    eyaml_cert_fp = forms.CharField(
+        widget=forms.TextInput(attrs={"readonly": True}),
+        label=_("Hiera eyaml Certificate Fingerprint"),
+        required=False)
+
+    eyaml_cert_upload = forms.FileField(
+        label=_("Import Hiera eyaml Certificate"),
+        required=False)
+
+    eyaml_update = forms.ChoiceField(
+        label=_("Modify Hiera eyaml Certificate/Key Pair"),
         required=False,
-        initial=True,
-        help_text=_("Generates a new certificate/key pair for encrypting data in Hiera."))
+        choices=[
+            ("", _("No Change")),
+            ("create", _("Create New")),
+            ("import", _("Import")),
+        ],
+        initial="create",
+        help_text=_("Create or import a certificate/key pair for encrypting data in Hiera."))
 
     revision = forms.CharField(
         widget=forms.HiddenInput(),
@@ -177,24 +190,24 @@ class VLConfigForm(forms.SelfHandlingForm):
                             exceptions.handle(request)
                             partial_load = True
 
-                if self.saved_params.get("eyaml_cert"):
-                    self.fields["eyaml_create"].initial = False
-
-                    if request.method == "GET":
-                        try:
-                            cert = self.stash.load_x509_cert(self.saved_params["eyaml_cert"])
-                            self.fields["eyaml_cert_fp"].initial = cert.fingerprint()
-                        except:
-                            exceptions.handle(request)
-                            partial_load = True
-
                 if self.saved_params.get("eyaml_key"):
-                    self.fields["eyaml_create"].initial = False
+                    self.fields["eyaml_update"].initial = ""
 
                     if request.method == "GET":
                         try:
                             key = self.stash.load_private_key(self.saved_params["eyaml_key"])
                             self.fields["eyaml_key_fp"].initial = key.fingerprint()
+                        except:
+                            exceptions.handle(request)
+                            partial_load = True
+
+                if self.saved_params.get("eyaml_cert"):
+                    self.fields["eyaml_update"].initial = ""
+
+                    if request.method == "GET":
+                        try:
+                            cert = self.stash.load_x509_cert(self.saved_params["eyaml_cert"])
+                            self.fields["eyaml_cert_fp"].initial = cert.fingerprint()
                         except:
                             exceptions.handle(request)
                             partial_load = True
@@ -220,10 +233,19 @@ class VLConfigForm(forms.SelfHandlingForm):
         if data.get("puppet_action", "none") != "none":
             if not (data.get("repo_key_create", False) or self.saved_params.get("repo_key")):
                 msg = _("The selected Puppet action requires a deployment key.")
-                raise forms.ValidationError(msg)
-            elif not (data.get("eyaml_create", False) or (self.saved_params.get("eyaml_cert") and self.saved_params.get("eyaml_key"))):
+                self._errors["puppet_action"] = self.error_class([msg])
+            elif not (data.get("eyaml_update") or (self.saved_params.get("eyaml_key") and self.saved_params.get("eyaml_cert"))):
                 msg = _("The selected Puppet action requires a Hiera eyaml certificate/key pair.")
-                raise forms.ValidationError(msg)
+                self._errors["puppet_action"] = self.error_class([msg])
+
+        if data.get("eyaml_update", "") == "import":
+            if not data.get("eyaml_key_upload"):
+                msg = _("No private key specified to import.")
+                self._errors["eyaml_key_upload"] = self.error_class([msg])
+
+            if not data.get("eyaml_cert_upload"):
+                msg = _("No certificate specified to import.")
+                self._errors["eyaml_cert_upload"] = self.error_class([msg])
 
         return data
 
@@ -285,26 +307,50 @@ class VLConfigForm(forms.SelfHandlingForm):
                     self.api_error(msg)
                     return False
 
-            if data.get("eyaml_create", False):
-                LOG.debug("Generating new eyaml key")
+            eyaml_update = data.get("eyaml_update", "")
+            if eyaml_update:
                 try:
-                    new_eyaml_key = self.stash.create_private_key()
+                    if eyaml_update == "create":
+                        LOG.debug("Generating new eyaml key")
+                        new_eyaml_key = self.stash.create_private_key()
+                    elif eyaml_update == "import":
+                        LOG.debug("Importing eyaml key")
+                        new_eyaml_key = self.stash.import_private_key(data.get("eyaml_key_upload"))
+
+                    assert new_eyaml_key
                     new_params["eyaml_key"] = new_eyaml_key.metadata()
                 except:
                     exceptions.handle(request)
-                    msg = _("Failed to generate eyaml key.")
+                    msg = _("Failed to update Hiera eyaml key.")
                     self.api_error(msg)
                     return False
 
-                LOG.debug("Generating new eyaml certificate")
                 try:
-                    new_eyaml_cert = self.stash.create_x509_cert(new_eyaml_key,
-                        "hiera-eyaml-{0}".format(request.user.project_name),
-                        100 * 365)
+                    if eyaml_update == "create":
+                        LOG.debug("Generating new eyaml certificate")
+                        new_eyaml_cert = self.stash.create_x509_cert(new_eyaml_key,
+                            "hiera-eyaml-{0}".format(request.user.project_name),
+                            100 * 365)
+                    elif eyaml_update == "import":
+                        LOG.debug("Importing eyaml certificate")
+                        new_eyaml_cert = self.stash.import_x509_cert(data.get("eyaml_cert_upload"))
+
+                    assert new_eyaml_cert
                     new_params["eyaml_cert"] = new_eyaml_cert.metadata()
                 except:
                     exceptions.handle(request)
-                    msg = _("Failed to generate eyaml certificate.")
+                    msg = _("Failed to update Hiera eyaml certificate.")
+                    self.api_error(msg)
+                    return False
+
+                try:
+                    if not new_eyaml_cert.verify_key_pair(new_eyaml_key):
+                        msg = _("Hiera eyaml certificate was not signed with the given key.")
+                        self.api_error(msg)
+                        return False
+                except:
+                    exceptions.handle(request)
+                    msg = _("Failed to verify Hiera eyaml certificate/key pair.")
                     self.api_error(msg)
                     return False
 

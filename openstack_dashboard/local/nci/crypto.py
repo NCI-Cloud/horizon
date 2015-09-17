@@ -37,9 +37,10 @@ from StringIO import StringIO
 
 try:
     from cryptography import x509
+    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.hazmat.primitives.serialization import BestAvailableEncryption, Encoding, load_pem_private_key, NoEncryption, PrivateFormat
     from cryptography.x509.oid import NameOID
     USE_NEW_CRYPTO_LIB=True
@@ -283,6 +284,40 @@ class Certificate(CryptoStashItem):
             LOG.exception("Error generating certificate fingerprint (ref {0}): {1}".format(self.ref, e))
             raise CryptoError("Failed to get fingerprint for certificate with ref: {0}".format(self.ref))
 
+    def verify_key_pair(self, key):
+        """Verifies that the certificate is paired with the given private key."""
+        assert isinstance(key, PrivateKey)
+        test_data = base64.b64decode("Ag5Ns98mgdLxiq3pyuNecMCXGUcYopmPNyc6GsJ6wd0=")
+
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                pad = padding.PSS(padding.MGF1(hashes.SHA256()),
+                    padding.PSS.MAX_LENGTH)
+                signer = key._impl.signer(pad, hashes.SHA256())
+                signer.update(test_data)
+                sig = signer.finalize()
+
+                verifier = self._impl.public_key().verifier(sig,
+                    pad,
+                    hashes.SHA256())
+                verifier.update(test_data)
+
+                try:
+                    verifier.verify()
+                except InvalidSignature:
+                    return False
+            else:
+                sig = crypto.sign(key._impl, test_data, "sha256")
+
+                try:
+                    crypto.verify(self._impl, sig, test_data, "sha256")
+                except:
+                    return False
+        except Exception as e:
+            LOG.exception("Error verifying certificate/key pair (cert {0}; key {1}): {2}".format(self.ref, key.ref, e))
+            raise CryptoError("Failed to verify certificate \"{0}\" and key \"{1}\"".format(self.ref, key.ref))
+
+        return True
 
 # TODO: Use Barbican for storage instead of Swift.  However, the following
 # blueprint will need to be implemented first so that we can retrieve
@@ -371,6 +406,15 @@ class CryptoStash(object):
             raise CryptoError("Crypto stash parameters not set")
         return self._params
 
+    def _save_to_stash(self, item_cls, key_impl):
+        item = item_cls(key_impl, self, None)
+        container = nci_private_container_name(self._request)
+        api.swift.swift_api(self._request).put_object(container,
+            item.ref,
+            item.export(),
+            content_type="text/plain")
+        return item
+
     def create_private_key(self):
         """Generates a new private key and saves it in the stash."""
         try:
@@ -385,13 +429,31 @@ class CryptoStash(object):
             LOG.exception("Error generating new RSA key: {0}".format(e))
             raise CryptoError("Failed to generate new private key")
 
-        key = PrivateKey(key_impl, self, None)
-        container = nci_private_container_name(self._request)
-        api.swift.swift_api(self._request).put_object(container,
-            key.ref,
-            key.export(),
-            content_type="text/plain")
-        return key
+        return self._save_to_stash(PrivateKey, key_impl)
+
+    def import_private_key(self, upload):
+        """Imports an unencrypted private key into the stash."""
+        if (upload.size < 0) or (upload.size > 262144):
+            raise CryptoError("Uploaded file too large - expected a private key")
+
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                key_impl = load_pem_private_key(upload.read(),
+                    None,
+                    default_backend())
+                key_size = key_impl.key_size
+            else:
+                key_impl = crypto.load_privatekey(crypto.FILETYPE_PEM,
+                    upload.read())
+                key_size = key_impl.bits()
+        except Exception as e:
+            LOG.exception("Error importing RSA key: {0}".format(e))
+            raise CryptoError("Import failed - expected a PEM encoded unencrypted private key")
+
+        if key_size < 3072:
+            raise CryptoError("Import failed - key must be 3072 bits or larger")
+
+        return self._save_to_stash(PrivateKey, key_impl)
 
     def load_private_key(self, metadata):
         """Loads an existing private key from the stash."""
@@ -493,13 +555,25 @@ class CryptoStash(object):
             LOG.exception("Error creating X.509 certificate: {0}".format(e))
             raise CryptoError("Failed to create X.509 certificate")
 
-        cert = Certificate(cert_impl, self, None)
-        container = nci_private_container_name(self._request)
-        api.swift.swift_api(self._request).put_object(container,
-            cert.ref,
-            cert.export(),
-            content_type="text/plain")
-        return cert
+        return self._save_to_stash(Certificate, cert_impl)
+
+    def import_x509_cert(self, upload):
+        """Imports a certificate into the stash."""
+        if (upload.size < 0) or (upload.size > 262144):
+            raise CryptoError("Uploaded file too large - expected an X.509 certificate")
+
+        try:
+            if USE_NEW_CRYPTO_LIB:
+                cert_impl = x509.load_pem_x509_certificate(upload.read(),
+                    default_backend())
+            else:
+                cert_impl = crypto.load_certificate(crypto.FILETYPE_PEM,
+                    upload.read())
+        except Exception as e:
+            LOG.exception("Error importing X.509 certificate: {0}".format(e))
+            raise CryptoError("Import failed - expected a PEM encoded X.509 certificate")
+
+        return self._save_to_stash(Certificate, cert_impl)
 
     def load_x509_cert(self, metadata):
         """Loads an existing certificate from the stash."""
