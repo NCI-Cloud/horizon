@@ -122,7 +122,10 @@ class VLConfigForm(forms.SelfHandlingForm):
             config_obj_name = nci_vl_project_config_name()
             if api.swift.swift_object_exists(request, container, config_obj_name):
                 LOG.debug("Loading project configuration")
-                obj = api.swift.swift_get_object(request, container, config_obj_name)
+                obj = api.swift.swift_get_object(request,
+                    container,
+                    config_obj_name,
+                    resp_chunk_size=None)
                 self.cfg_timestamp = obj.timestamp
                 if self.cfg_timestamp is None:
                     # Workaround bug in Ceph which doesn't return the "X-Timestamp"

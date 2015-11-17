@@ -462,7 +462,8 @@ class CryptoStash(object):
         key = PrivateKey(None, self, metadata)
         swift_obj = api.swift.swift_get_object(self._request,
             nci_private_container_name(self._request),
-            key.ref)
+            key.ref,
+            resp_chunk_size=None)
 
         pw = key.password
         try:
@@ -582,7 +583,8 @@ class CryptoStash(object):
         cert = Certificate(None, self, metadata)
         swift_obj = api.swift.swift_get_object(self._request,
             nci_private_container_name(self._request),
-            cert.ref)
+            cert.ref,
+            resp_chunk_size=None)
 
         try:
             if USE_NEW_CRYPTO_LIB:
@@ -650,7 +652,8 @@ def swift_get_temp_url_key(request):
         if api.swift.swift_object_exists(request, container, "temp-url-key"):
             swift_obj = api.swift.swift_get_object(request,
                 container,
-                "temp-url-key")
+                "temp-url-key",
+                resp_chunk_size=None)
             secret = swift_obj.data
 
     return secret

@@ -665,7 +665,7 @@ class BootstrapConfigAction(workflows.Action):
         initial="reboot",
         help_text=_("Whether to install system updates.  (Recommended)"))
 
-    class Meta:
+    class Meta(object):
         name = _("Initial Boot")
         help_text_template = ("project/instances/../instances_nci/_bootstrap_help.html")
 
@@ -691,7 +691,8 @@ class BootstrapConfigAction(workflows.Action):
             try:
                 obj = api.swift.swift_get_object(request,
                     container,
-                    config_obj_name)
+                    config_obj_name,
+                    resp_chunk_size=None)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -857,7 +858,8 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             try:
                 obj = api.swift.swift_get_object(request,
                     nci_private_container_name(request),
-                    nci_vl_project_config_name())
+                    nci_vl_project_config_name(),
+                    resp_chunk_size=None)
             except:
                 exceptions.handle(request)
                 msg = _("VL project configuration not found.")
@@ -924,7 +926,7 @@ class NCILaunchInstance(base_mod.LaunchInstance):
             messages.error(request, msg)
             return False
 
-        context["customization_script"] = user_data.as_string()
+        context["script_data"] = user_data.as_string()
 
         # We could copy the contents of the base class function here and make
         # the changes that we need.  But that would create a maintenance

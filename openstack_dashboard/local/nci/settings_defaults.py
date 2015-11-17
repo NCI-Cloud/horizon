@@ -6,11 +6,14 @@ SESSION_TIMEOUT = 86400
 # Hook for replacing built-in dashboard panels.
 HORIZON_CONFIG["customization_module"] = "openstack_dashboard.local.nci.customisation"
 
-# TODO: This should be done by using "ADD_EXCEPTIONS" in the "_10_project.py"
-# pluggable settings file but we can't due to this bug (fixed in Kilo):
-#   https://bugs.launchpad.net/horizon/+bug/1404032
-from openstack_dashboard.local.nci.exceptions import CryptoError
-HORIZON_CONFIG["exceptions"]["recoverable"] += (CryptoError,)
+# Add the "local" directory to the "INSTALLED_APPS" path so that we can
+# publish static files from there.
+# NB: This doesn't apply to static files served via Apache.
+# TODO: Change logo using new theme support instead?
+# TODO: Investigate "AUTO_DISCOVER_STATIC_FILES" in Liberty or later.
+ADD_INSTALLED_APPS = [
+    'openstack_dashboard.local',
+]
 
 # Maximum number of vNICs to attach when launching a VM.
 NCI_VM_NETWORK_INTF_LIMIT = 4

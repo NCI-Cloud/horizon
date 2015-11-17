@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.admin_nci.projects.views
+# openstack_dashboard.local.dashboards.identity_nci.users.urls
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -16,17 +16,22 @@
 #    under the License.
 #
 
-from openstack_dashboard.dashboards.admin.projects import views as base_mod
+from django.conf.urls import patterns
+from django.conf.urls import url
 
-from . import workflows
+from openstack_dashboard.dashboards.identity.users.urls import urlpatterns as orig_urlpatterns
+
+from . import views
 
 
-class NCICreateProjectView(base_mod.CreateProjectView):
-    workflow_class = workflows.NCICreateProject
+VIEW_MOD = "openstack_dashboard.local.dashboards.identity_nci.users.views"
 
+urlpatterns = []
+for x in orig_urlpatterns:
+    if getattr(x, "name", "") == "index":
+        x = patterns(VIEW_MOD, url(x.regex.pattern, views.NCIIndexView.as_view(), name=x.name))[0]
 
-class NCIUpdateProjectView(base_mod.UpdateProjectView):
-    workflow_class = workflows.NCIUpdateProject
+    urlpatterns.append(x)
 
 
 # vim:ts=4 et sw=4 sts=4:

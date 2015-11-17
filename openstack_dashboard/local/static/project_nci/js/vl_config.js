@@ -22,8 +22,8 @@ horizon.nci_vl_config = {
     var eyaml_update_select = $("#id_eyaml_update");
     eyaml_update_select.change(function(evt) {
       var el = $(this);
-      var key_upload_field = $("#id_eyaml_key_upload").closest("div.form-field");
-      var cert_upload_field = $("#id_eyaml_cert_upload").closest("div.form-field");
+      var key_upload_field = $("#id_eyaml_key_upload").closest("div.form-group");
+      var cert_upload_field = $("#id_eyaml_cert_upload").closest("div.form-group");
       if (el.val() === "import") {
         key_upload_field.removeClass("hide");
         cert_upload_field.removeClass("hide");

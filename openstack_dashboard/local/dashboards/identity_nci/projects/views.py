@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.admin_nci.users.views
+# openstack_dashboard.local.dashboards.identity_nci.projects.views
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -16,15 +16,17 @@
 #    under the License.
 #
 
-from openstack_dashboard.dashboards.admin.users import views as base_mod
+from openstack_dashboard.dashboards.identity.projects import views as base_mod
+
+from . import workflows
 
 
-class NCIIndexView(base_mod.IndexView):
-    def get_data(self):
-        # Keystone users have UUIDs so this effectively filters out
-        # any LDAP users.
-        users = super(NCIIndexView, self).get_data()
-        return [u for u in users if len(u.id) >= 32]
+class NCICreateProjectView(base_mod.CreateProjectView):
+    workflow_class = workflows.NCICreateProject
+
+
+class NCIUpdateProjectView(base_mod.UpdateProjectView):
+    workflow_class = workflows.NCIUpdateProject
 
 
 # vim:ts=4 et sw=4 sts=4:

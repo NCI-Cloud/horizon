@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.admin_nci.projects.urls
+# openstack_dashboard.local.dashboards.identity_nci.projects.urls
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -19,12 +19,12 @@
 from django.conf.urls import patterns
 from django.conf.urls import url
 
-from openstack_dashboard.dashboards.admin.projects.urls import urlpatterns as orig_urlpatterns
+from openstack_dashboard.dashboards.identity.projects.urls import urlpatterns as orig_urlpatterns
 
 from . import views
 
 
-VIEW_MOD = "openstack_dashboard.local.dashboards.admin_nci.projects.views"
+VIEW_MOD = "openstack_dashboard.local.dashboards.identity_nci.projects.views"
 
 urlpatterns = []
 for x in orig_urlpatterns:

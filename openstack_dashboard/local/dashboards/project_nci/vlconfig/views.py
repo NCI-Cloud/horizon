@@ -17,6 +17,7 @@
 #
 
 from django.core.urlresolvers import reverse_lazy
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import forms
 
@@ -27,8 +28,14 @@ VLCONFIG_INDEX_URL = "horizon:project:vlconfig:index"
 
 class IndexView(forms.ModalFormView):
     form_class = VLConfigForm
-    template_name = "project/vlconfig/index.html"
+    form_id = "project_config_form"
+    modal_header = _("Project Configuration")
+    modal_id = "project_config_modal"
+    page_title = _("Project Configuration")
+    submit_label = _("Save")
+    submit_url = reverse_lazy(VLCONFIG_INDEX_URL)
     success_url = reverse_lazy(VLCONFIG_INDEX_URL)
+    template_name = "project/vlconfig/index.html"
 
 
 # vim:ts=4 et sw=4 sts=4:

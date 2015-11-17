@@ -28,8 +28,7 @@ horizon.nci_instance_networks = {
       var group_div = $(field).prev("#" + group_id);
       if (group_div.length === 0) {
         // Start a new interface group.
-        // TODO: Consider using "well-sm" or even "panel" class when Horizon
-        // is updated to a later version of Bootstrap.
+        // TODO: Consider using "panel" CSS class instead.
         group_div = $("<div/>", {
           id: group_id,
           "class": this.step_slug + "-intf-group well",
@@ -232,7 +231,7 @@ horizon.nci_instance_bootstrap = {
     var puppet_action_select = $("#id_puppet_action");
     puppet_action_select.change(function(evt) {
       var el = $(this);
-      var puppet_env_field = $("#id_puppet_env").closest("div.form-field");
+      var puppet_env_field = $("#id_puppet_env").closest("div.form-group");
       if (el.val() === "none") {
         puppet_env_field.addClass("hide");
       }

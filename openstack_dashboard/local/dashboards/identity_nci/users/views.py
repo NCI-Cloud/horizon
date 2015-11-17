@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.admin_nci.users.urls
+# openstack_dashboard.local.dashboards.identity_nci.users.views
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -16,22 +16,15 @@
 #    under the License.
 #
 
-from django.conf.urls import patterns
-from django.conf.urls import url
-
-from openstack_dashboard.dashboards.admin.users.urls import urlpatterns as orig_urlpatterns
-
-from . import views
+from openstack_dashboard.dashboards.identity.users import views as base_mod
 
 
-VIEW_MOD = "openstack_dashboard.local.dashboards.admin_nci.users.views"
-
-urlpatterns = []
-for x in orig_urlpatterns:
-    if getattr(x, "name", "") == "index":
-        x = patterns(VIEW_MOD, url(x.regex.pattern, views.NCIIndexView.as_view(), name=x.name))[0]
-
-    urlpatterns.append(x)
+class NCIIndexView(base_mod.IndexView):
+    def get_data(self):
+        # Keystone users have UUIDs so this effectively filters out
+        # any LDAP users.
+        users = super(NCIIndexView, self).get_data()
+        return [u for u in users if len(u.id) >= 32]
 
 
 # vim:ts=4 et sw=4 sts=4:

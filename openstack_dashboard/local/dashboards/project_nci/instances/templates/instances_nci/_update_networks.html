@@ -1,36 +1,29 @@
 {% load i18n %}
 
+{% comment %}Overrides: horizon/common/_workflow_step.html{% endcomment %}
 <noscript><h3>{{ step }}</h3></noscript>
-<table class="table-fixed">
-  <tbody>
-    <tr>
-      <td class="actions">
-        <div id="{{ step.slug }}_fields" data-external-nets="{{ form.external_nets }}">
-          {% include "horizon/common/_form_fields.html" %}
-          <div class="hide alert alert-message alert-warning warning-advanced-routing" style="margin-top: 4px; margin-bottom: 4px;">
-            {% blocktrans %}Assigning a floating IP or external network to this interface is likely to require additional routing configuration in the virtual machine.  Consider using the first network interface instead.{% endblocktrans %}
-          </div>
-        </div>
-      </td>
-      <td class="help_text">
-        <p>{% blocktrans %}Configure one or more network interfaces for the new virtual machine instance.{% endblocktrans %}</p>
-        <p>{% blocktrans %}A <em>fixed IP</em> is assigned directly to the network interface in the virtual machine (via DHCP).  This address is intended to remain the same for the lifetime of the instance.  In most cases this should be set to <em>Automatic</em> which will take the next available IP address from the selected network's allocation pool.{% endblocktrans %}</p>
-        <p>{% blocktrans %}When a <em>floating public IP</em> is associated with a network interface, then packets that are sent to that IP address are redirected to the selected interface on the virtual machine (DNAT).  Any packets leaving the interface with a destination outside the selected network will have their source address rewritten to the floating IP (SNAT).  These translations occur on the router connected to the selected network.{% endblocktrans %}</p>
-        <p>{% blocktrans %}A floating IP can be removed and reassigned to another network interface, including on a different virtual machine instance, at any time during the lifetime of the virtual machine.{% endblocktrans %}</p>
-        <p>{% blocktrans %}Note: Images are often configured to bring up the first network interface only (VL images currently enable two).  Therefore, once the virtual machine instance has booted you may need to enable any additional interfaces manually.{% endblocktrans %}</p>
-      </td>
-    </tr>
-  </tbody>
-</table>
+<div class="row">
+  <div class="col-sm-6">
+    <div id="{{ step.slug }}_fields" data-external-nets="{{ form.external_nets }}">
+      {% include "horizon/common/_form_fields.html" %}
+      <div class="hide alert alert-message alert-warning warning-advanced-routing" style="margin-top: 4px; margin-bottom: 4px;">
+        {% blocktrans %}Assigning a floating IP or external network to this interface is likely to require additional routing configuration in the virtual machine.  Consider using the first network interface instead.{% endblocktrans %}
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6">
+    <p>{% blocktrans %}Configure one or more network interfaces for the new virtual machine instance.{% endblocktrans %}</p>
+    <p>{% blocktrans %}A <em>fixed IP</em> is assigned directly to the network interface in the virtual machine (via DHCP).  This address is intended to remain the same for the lifetime of the instance.  In most cases this should be set to <em>Automatic</em> which will take the next available IP address from the selected network's allocation pool.{% endblocktrans %}</p>
+    <p>{% blocktrans %}When a <em>floating public IP</em> is associated with a network interface, then packets that are sent to that IP address are redirected to the selected interface on the virtual machine (DNAT).  Any packets leaving the interface with a destination outside the selected network will have their source address rewritten to the floating IP (SNAT).  These translations occur on the router connected to the selected network.{% endblocktrans %}</p>
+    <p>{% blocktrans %}A floating IP can be removed and reassigned to another network interface, including on a different virtual machine instance, at any time during the lifetime of the virtual machine.{% endblocktrans %}</p>
+    <p>{% blocktrans %}Note: Images are often configured to bring up the first network interface only (VL images currently enable two).  Therefore, once the virtual machine instance has booted you may need to enable any additional interfaces manually.{% endblocktrans %}</p>
+  </div>
+</div>
 
 <script src="{{ STATIC_URL }}project_nci/js/instances_workflow.js" type="text/javascript" charset="utf-8"></script>
 
 <script>
-  if (typeof horizon.nci_instance_networks !== 'undefined') {
+  (window.$ || window.addHorizonLoadEvent)(function() {
     horizon.nci_instance_networks.workflow_init($(".workflow"), "{{ step.slug }}");
-  } else {
-    addHorizonLoadEvent(function() {
-      horizon.nci_instance_networks.workflow_init($(".workflow"), "{{ step.slug }}");
-    });
-  }
+  });
 </script>

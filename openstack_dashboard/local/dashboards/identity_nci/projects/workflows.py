@@ -1,4 +1,4 @@
-# openstack_dashboard.local.dashboards.admin_nci.projects.workflows
+# openstack_dashboard.local.dashboards.identity_nci.projects.workflows
 #
 # Copyright (c) 2015, NCI, Australian National University.
 # All Rights Reserved.
@@ -18,10 +18,10 @@
 
 #import pdb ## DEBUG
 
-from openstack_dashboard.dashboards.admin.projects import workflows as base_mod
+from openstack_dashboard.dashboards.identity.projects import workflows as base_mod
 
 
-BASIC_MEMBERSHIP_TEMPLATE = "admin/projects/../projects_nci/_workflow_step_update_members_basic.html"
+BASIC_MEMBERSHIP_TEMPLATE = "identity/projects/../projects_nci/_workflow_step_update_members_basic.html"
 
 
 class NCICreateProject(base_mod.CreateProject):

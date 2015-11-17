@@ -1,1 +1,0 @@
-../../../../dashboards/admin/projects/panel.py

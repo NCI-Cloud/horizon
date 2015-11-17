@@ -15,11 +15,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
-# In theory, it ought to be possible to replace the built-in panels with
-# customised versions using the "Pluggable Settings" mechanism by first
-# removing the existing panel and then adding the custom panel class.
-# Unfortunately this doesn't work in practice because of some serious
-# bugs as described below.
+# You might assume that it ought to be possible to replace the built-in
+# panels with customised versions using the "Pluggable Settings" mechanism by
+# first removing the existing panel and then adding the custom panel class.
+# Unfortunately this doesn't work in practice due to the limitations
+# described below.
 #
 # In "horizon.Site._process_panel_configuration()", when a panel is removed
 # it is only removed from the dashboard's class registry.  Any corresponding
@@ -39,12 +39,15 @@
 # wrap the panel class in a panel group but that fails as the constructor
 # expects an iterable type.
 #
-# A cursory look at the Juno code suggests that both these issues are
-# still present.
+# So to work around this, we are using the older customisation mechanism
+# instead to programatically replace the panels.  This also has an added
+# benefit of maintaining the relative order of panels in each dashboard.
 #
-# So to work around this, we are using this older customisation mechanism
-# instead to programatically replace the panels.  This does have an added
-# benefit of maintaining the order or panels in the dashboard.
+# Another possible option could be to symlink "dashboard.py" into the
+# custom directory tree but that would also then require symlinking
+# every unmodified panel as well since the code always looks for them
+# relative to that file.
+# https://github.com/openstack/horizon/blob/stable/kilo/horizon/base.py#L563
 #
 
 import logging
@@ -69,12 +72,12 @@ def replace_panels(dash_slug, panels):
             import_module(mod_path)
 
 
-admin_panels = [
-    ("projects", "openstack_dashboard.local.dashboards.admin_nci.projects.panel"),
-    ("users", "openstack_dashboard.local.dashboards.admin_nci.users.panel"),
+identity_panels = [
+    ("projects", "openstack_dashboard.local.dashboards.identity_nci.projects.panel"),
+    ("users", "openstack_dashboard.local.dashboards.identity_nci.users.panel"),
 ]
 
-replace_panels("admin", admin_panels)
+replace_panels("identity", identity_panels)
 
 
 project_panels = [

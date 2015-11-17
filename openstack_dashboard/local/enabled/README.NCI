@@ -1,0 +1,8 @@
+When we don't need to override any settings for a dashboard we then symlink
+to the base file instead.  This is necessary in order to maintain the
+relative display order of the dashboards in the navigation menu.  The plugin
+settings modules are sorted according to the namespace and then the name
+of the module itself.  So any dashboard defined in this directory would be
+displayed after the default ones.
+
+https://github.com/openstack/horizon/blob/stable/kilo/openstack_dashboard/utils/settings.py#L58

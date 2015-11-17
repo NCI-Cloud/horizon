@@ -1,4 +1,4 @@
-//# sourceURL=/static/admin_nci/js/projects_workflow.js
+//# sourceURL=/static/identity_nci/js/projects_workflow.js
 //
 // Copyright (c) 2015, NCI, Australian National University.
 // All Rights Reserved.
