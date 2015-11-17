@@ -166,7 +166,7 @@ class VLConfigForm(forms.SelfHandlingForm):
                 self.set_warning(msg)
                 self.fields["puppet_action"].initial = "auto"
                 self.fields["puppet_env"].initial = "production"
-                self.fields["repo_path"].initial = "p/{0}/puppet.git".format(request.user.project_name)
+                self.fields["repo_path"].initial = "{0}/puppet.git".format(request.user.project_name)
             return
 
         for k, v in self.saved_params.iteritems():
