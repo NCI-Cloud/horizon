@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% load i18n %}
+{% block title %}{% trans "Hypervisors" %}{% endblock %}
+
+{% block page_header %}
+  {% include "horizon/common/_page_header.html" with title=_("Hypervisors") %}
+{% endblock page_header %}
+
+{% block css %}
+    {% include "_stylesheets.html" %}
+    <link href="{{ STATIC_URL }}admin_nci/css/hvlist.css" rel="stylesheet">
+{% endblock %}
+
+{% block js %}
+    {% include "admin/hvlist/_scripts.html" %}
+{% endblock %}
+
+
+{% block main %}
+<dl id="summary">
+<dt>Total hypervisors</dt>
+<dd>{{ hypervisors|length }}</dd>
+<dt>Used hypervisors</dt>
+<dd>{{ used_count }}</dd>
+<dt>Instances</dt>
+<dd>{{ server_count }}</dd>
+</dl>
+<p id="search">Find <input type="search"></p>
+<p style="clear:left;height:2em"><!-- hello i am hacky --></p>
+{% spaceless %}
+<ul id="hypervisors">{% for h in hypervisors %}
+<li style="background-color:{{ h.color }}"{% if h.unow.vcpus > h.utot.vcpus %} class="oversubscribed"{% endif %}>
+    <h1 class="{{ h.status }} {{ h.state }}">{{ h.short_name }}</h1>
+    <span class="instancecount">{{ h.servers|length }}</span>
+    <div>{% comment %}nesting div.hypervisor prevents clicking on it from closing it{% endcomment %}
+    <div class="hypervisor">
+        <h1 class="hostname searchtext">{{ h.host }}</h1>
+        <dl>
+            <dt class="cpu">CPU:</dt>
+            <dd class="resuse">
+                <span class="resused" style="width:{{ h.cpuu|floatformat:2 }}em"></span>
+                {% for s in h.servers %}
+                    <span class="resused {{ s.id }}" style="width:{{ s.cpuu|floatformat:2 }}em"></span>
+                {% endfor %}
+                <span class="resfree" style="width:{{ h.cpuf|floatformat:2 }}em"></span>{{ h.cpu_usage }}</dd>
+
+            <dt class="memory">Memory:</dt>
+            <dd>
+                <span class="resused" style="width:{{ h.memu|floatformat:2 }}em"></span>
+                {% for s in h.servers %}
+                    <span class="resused {{ s.id }}" style="width:{{ s.memu|floatformat:2 }}em"></span>
+                {% endfor %}
+                <span class="resfree" style="width:{{ h.memf|floatformat:2 }}em"></span>{{ h.mem_usage }}</dd>
+
+            <dt class="disk">Disk:</dt>
+            <dd>
+                <span class="resused" style="width:{{ h.disku|floatformat:2 }}em"></span>
+                {% for s in h.servers %}
+                    <span class="resused {{ s.id }}" style="width:{{ s.disku|floatformat:2 }}em"></span>
+                {% endfor %}
+                <span class="resfree" style="width:{{ h.diskf|floatformat:2 }}em"></span>{{ h.disk_usage }}</dd>
+
+            <dt class="state">State:</dt>
+            <dd>{{ h.state }}/{{ h.status }}</dd>
+
+            {% if h.servers %}
+                <dt>Instances:</dt>
+                <dd class="servers">
+                    <ul>{% for s in h.servers %}
+                    <li>
+                        {% if s.statussymbol %}
+                            <abbr title="{{s.status}}" class="status-{{s.status}}">{{s.statussymbol|safe}}</abbr>
+                        {% endif %}
+                        <span class="serverid searchtext">{{ s.id }}</span>
+                        <span class="status searchtext">{{ s.status}}</span>
+                        <span class="servername searchtext">{{ s.name }}</span>
+                        <span class="flavor">{{ s.flavor.description }}</span>
+                        <dl class="server">
+                            <dt>Project</dt>
+                            <dd class="searchtext">{{ s.project.name }}</dd>
+                            <dt>Flavor</dt>
+                            <dd class="searchtext">{{ s.flav.name }}</dd>
+                            <dt>Uptime</dt>
+                            <dd>{{ s.created|timesince }}</dd>
+                        </dl>
+                    </li>
+                {% endfor %}</ul></dd>
+            {% endif %}
+        </dl>
+    </div>
+    </div>
+</li>{% endfor %}</ul>
+{% endspaceless %}
+{% endblock %}
+
