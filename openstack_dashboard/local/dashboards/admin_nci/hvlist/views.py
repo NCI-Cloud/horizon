@@ -80,7 +80,7 @@ class IndexView(views.APIView):
         for h in hypervisors:
             h.host = getattr(h, h.NAME_ATTR)
             h.short_name = short_name(h.host)
-            h.servers = hypervisor_instances[h.host]
+            h.servers = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
 
             ncpu, tcpu = float(h.vcpus_used),     float(h.vcpus)
             nmem, tmem = float(h.memory_mb_used), float(h.memory_mb)
