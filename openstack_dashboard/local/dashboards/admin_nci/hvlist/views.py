@@ -78,7 +78,7 @@ class IndexView(views.APIView):
 
         resbar_width = 8 # em
         for h in hypervisors:
-            h.host = getattr(h, h.NAME_ATTR)
+            h.host = h.service['host']
             h.short_name = short_name(h.host)
             h.servers = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
 
