@@ -3,6 +3,10 @@
 
 SESSION_TIMEOUT = 86400
 
+# Protect CSRF/session cookies from cross-site scripting.
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = True
+
 # Hook for replacing built-in dashboard panels.
 HORIZON_CONFIG["customization_module"] = "openstack_dashboard.local.nci.customisation"
 
