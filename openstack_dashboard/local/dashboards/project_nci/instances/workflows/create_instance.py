@@ -90,8 +90,6 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
 
                 if (tag not in self.vl_tags) or (image._vl_ts > self.vl_tags[tag]._vl_ts):
                     self.vl_tags[tag] = image
-            else:
-                image.name += " [non-VL]"
 
         def clone_image(tag):
             if "-" in tag:
@@ -126,10 +124,11 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
             return image
 
         if self.vl_tags:
-            choices.insert(1, ("---", "---------------"))
+            choices.insert(1, ("---all", "----- All Images -----"))
             for tag in reversed(sorted(self.vl_tags.keys())):
                 image = clone_image(tag)
                 choices.insert(1, (image.id, image))
+            choices.insert(1, ("---vl", "----- VL Images -----"))
 
         return choices
 
@@ -155,7 +154,7 @@ class SetInstanceDetailsAction(base_mod.SetInstanceDetailsAction):
             val = self.cleaned_data.get("image_id")
 
         if val:
-            if val == "---":
+            if val.startswith("---"):
                 val = ""
             elif val.startswith("vltag:"):
                 # Convert the VL image tag back into the real image ID.
