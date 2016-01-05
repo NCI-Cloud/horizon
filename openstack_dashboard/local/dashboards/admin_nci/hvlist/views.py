@@ -16,11 +16,13 @@
 #    under the License.
 #
 
-from horizon import views
+from horizon import views, messages
 from openstack_dashboard import api
 from iso8601 import parse_date
 from colorsys import hsv_to_rgb
 import re
+from novaclient.exceptions import NotFound, ClientException
+from django.http import HttpResponseServerError
 
 short_name_p = re.compile(r'^tc(?P<n>\d+)$')
 def short_name(hostname):
@@ -69,8 +71,29 @@ class IndexView(views.APIView):
         flavs = {f.id : f for f in flavs}
         hypervisor_instances = {} # OS-EXT-SRV-ATTR:host : [instance]
         for i in instances:
-            host = getattr(i, 'OS-EXT-SRV-ATTR:host')
+            try:
+                host = getattr(i, 'OS-EXT-SRV-ATTR:host')
+            except AttributeError:
+                # this will make a pretty box for the error message, although it assumes it's an HTTP error so writes "HTTP None"
+                raise ClientException(None, 'could not get OS-EXT-SRV-ATTR:host attribute of instance')
             if host not in hypervisor_instances: hypervisor_instances[host] = []
+            if i.flavor['id'] not in flavs:
+                # api.nova.flavor_list (which wraps novaclient.flavors.list) does not get all flavors
+                # so if we have a reference to one that hasn't been retrieved, try looking it up specifically
+                # (wrap this rather trivially in a try block to make the error less cryptic)
+                try:
+                    flavs[i.flavor['id']] = api.nova.flavor_get(request, i.flavor['id'])
+                    messages.warning(request, 'Extra lookup for flavor "'+str(i.flavor['id'])+'"')
+                except NotFound as e:
+                    raise NotFound(e.code, 'Unknown flavor id "'+str(i.flavor['id'])+'"')
+            if i.tenant_id not in projects:
+                # maybe the same thing could happen for projects
+                # (haven't actually experienced this error though)
+                try:
+                    projects[i.tenant_id] = api.keystone.tenant_get(request, i.tenant_id)
+                    messages.warning(request, 'Extra lookup for project "'+str(i.tenant_id)+'"')
+                except NotFound as e:
+                    raise NotFound(e.code, 'Unknown project id "'+str(i.tenant_id)+'"')
             i.flav = flavs[i.flavor['id']]
             i.project = projects[i.tenant_id]
             i.created = parse_date(i.created)
