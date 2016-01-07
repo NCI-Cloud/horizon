@@ -24,6 +24,12 @@ import re
 from novaclient.exceptions import NotFound, ClientException
 from django.http import HttpResponseServerError
 
+from openstack_dashboard.openstack.common import log as logging
+LOG = logging.getLogger(__name__)
+
+# TODO put this in css and make all the values output by template into percentages
+resbar_width = 8 # em
+
 short_name_p = re.compile(r'^tc(?P<n>\d+)$')
 def short_name(hostname):
     m = short_name_p.match(hostname)
@@ -71,43 +77,60 @@ class IndexView(views.APIView):
         flavs = {f.id : f for f in flavs}
         hypervisor_instances = {} # OS-EXT-SRV-ATTR:host : [instance]
         for i in instances:
+            # make sure we can tell which hypervisor is running this instance; if not, ignore it
             try:
                 host = getattr(i, 'OS-EXT-SRV-ATTR:host')
             except AttributeError:
-                # this will make a pretty box for the error message, although it assumes it's an HTTP error so writes "HTTP None"
-                raise ClientException(None, 'could not get OS-EXT-SRV-ATTR:host attribute of instance')
-            if host not in hypervisor_instances: hypervisor_instances[host] = []
+                messages.error(request, 'could not get OS-EXT-SRV-ATTR:host attribute of instance '+str(i.id)+' ('+str(i.name)+'); it will be ignored')
+                continue
+
+            # api.nova.flavor_list (which wraps novaclient.flavors.list) does not get all flavors,
+            # so if we have a reference to one that hasn't been retrieved, try looking it up specifically
+            # (wrap this rather trivially in a try block to make the error less cryptic)
             if i.flavor['id'] not in flavs:
-                # api.nova.flavor_list (which wraps novaclient.flavors.list) does not get all flavors
-                # so if we have a reference to one that hasn't been retrieved, try looking it up specifically
-                # (wrap this rather trivially in a try block to make the error less cryptic)
                 try:
                     flavs[i.flavor['id']] = api.nova.flavor_get(request, i.flavor['id'])
-                    messages.warning(request, 'Extra lookup for flavor "'+str(i.flavor['id'])+'"')
+                    LOG.debug('Extra lookup for flavor "'+str(i.flavor['id'])+'"')
                 except NotFound as e:
                     raise NotFound(e.code, 'Unknown flavor id "'+str(i.flavor['id'])+'"')
+
+            # maybe the same thing could happen for projects (haven't actually experienced this one though)
             if i.tenant_id not in projects:
-                # maybe the same thing could happen for projects
-                # (haven't actually experienced this error though)
                 try:
                     projects[i.tenant_id] = api.keystone.tenant_get(request, i.tenant_id)
-                    messages.warning(request, 'Extra lookup for project "'+str(i.tenant_id)+'"')
+                    LOG.debug('Extra lookup for project "'+str(i.tenant_id)+'"')
                 except NotFound as e:
                     raise NotFound(e.code, 'Unknown project id "'+str(i.tenant_id)+'"')
-            i.flav = flavs[i.flavor['id']]
+
+            # extract flavor data
+            flav = flavs[i.flavor['id']]
+            try:
+                ephemeral = getattr(flav, 'OS-FLV-EXT-DATA:ephemeral')
+            except AttributeError:
+                messages.error(request, 'could not get OS-FLV-EXT-DATA:ephemeral attribute of flavor '+str(flav.id)+' ('+str(flav.name)+'); associated instance will be ignored')
+                continue
+
+            # everything's sane, so set some fields for the template to use
+            i.flavor_name = flav.name
+            i.flavor_vcpus = float(flav.vcpus)
+            i.flavor_memory_bytes = float(flav.ram) * 1024**2
+            i.flavor_disk_bytes = (float(flav.disk) + float(ephemeral)) * 1024**3
             i.project = projects[i.tenant_id]
             i.created = parse_date(i.created)
+
+            # keep a running list of which instances belong to which hypervisors
+            if host not in hypervisor_instances: hypervisor_instances[host] = []
             hypervisor_instances[host].append(i)
 
-        resbar_width = 8 # em
         for h in hypervisors:
             h.host = h.service['host']
             h.short_name = short_name(h.host)
             h.servers = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
 
+            # convert number of vcpus used (n)ow, and (t)otal available, to float for arithmetic later on
             ncpu, tcpu = float(h.vcpus_used),     float(h.vcpus)
-            nmem, tmem = float(h.memory_mb_used), float(h.memory_mb)
-            ndis, tdis = float(h.local_gb_used),  float(h.local_gb)
+            nmem, tmem = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2
+            ndis, tdis = float(h.local_gb_used)*1024**3,  float(h.local_gb)*1024**3
             lcpu, lmem, ldis = ncpu/tcpu, nmem/tmem, ndis/tdis
 
             if h.state == 'up':
@@ -133,28 +156,22 @@ class IndexView(views.APIView):
             for s in h.servers:
                 mem_prefix,  mem_scale  = binary_prefix_scale(tmem*1024**2)
                 disk_prefix, disk_scale = binary_prefix_scale(tdis*1024**3)
-                s.flav.description = '{cpu}/{mem}/{disk}'.format(
-                    cpu  = s.flav.vcpus,
-                    mem  = int(s.flav.ram*1024**2*mem_scale+0.5),
-                    disk = int(s.flav.disk*1024**3*disk_scale+0.5),
-                )
                 s.statussymbol = status_symbols[s.status] if s.status in status_symbols else '?'
-                s.cpuu  = resbar_width * float(s.flav.vcpus) / tcpu
-                s.memu  = resbar_width * float(s.flav.ram) / tmem
-                s.disku = resbar_width * float(s.flav.disk) / tdis
+                s.cpuu  = resbar_width * s.flavor_vcpus / tcpu
+                s.memu  = resbar_width * s.flavor_memory_bytes / tmem
+                s.disku = resbar_width * s.flavor_disk_bytes / tdis
             # count resources used by host but not allocated to any instance
-            h.cpuu  = resbar_width * (ncpu - sum(s.flav.vcpus for s in h.servers))/tcpu
-            h.memu  = resbar_width * (nmem - sum(s.flav.ram for s in h.servers))/tmem
-            h.disku = resbar_width * (ndis - sum(s.flav.disk for s in h.servers))/tdis
+            h.cpuu  = resbar_width * (ncpu - sum(s.flavor_vcpus for s in h.servers))/tcpu
+            h.memu  = resbar_width * (nmem - sum(s.flavor_memory_bytes for s in h.servers))/tmem
+            h.disku = resbar_width * (ndis - sum(s.flavor_disk_bytes for s in h.servers))/tdis
 
             # usage strings for cpu/mem/disk
             h.cpu_usage  = '{n} / {t}'.format(n=h.vcpus_used, t=h.vcpus)
-            h.mem_usage  = usage_string(h.memory_mb_used*1024**2, h.memory_mb*1024**2)
-            h.disk_usage = usage_string(h.local_gb_used*1024**3, h.local_gb*1024**3)
+            h.mem_usage  = usage_string(nmem, h.memory_mb*1024**2)
+            h.disk_usage = usage_string(ndis, h.local_gb*1024**3)
 
 
         context['hypervisors'] = hypervisors
         context['used_count'] = sum(1 for h in hypervisors if h.servers)
         context['server_count'] = sum(len(h.servers) for h in hypervisors)
-        context['cluster_name'] = 'Devstack'
         return context
