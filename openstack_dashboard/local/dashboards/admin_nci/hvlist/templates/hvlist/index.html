@@ -127,13 +127,13 @@
                         {% endif %}
                         <span class="serverid searchtext">{{ s.id }}</span>
                         <span class="status searchtext">{{ s.status}}</span>
-                        <span class="flavor searchtext">{{ s.flavor_name }}</span>
                         <span class="servername searchtext">{{ s.name }}</span>
+                        <span class="flavor searchtext">{{ s.flavor_name }}</span>
                         <dl class="server">
                             <dt>Project</dt>
                             <dd class="searchtext">{{ s.project.name }}</dd>
                             <dt>Flavor</dt>
-                            <dd class="searchtext">{{ s.flavor_name }}</dd>
+                            <dd class="searchtext">{{ s.flavor_description }}</dd>
                             <dt>Uptime</dt>
                             <dd>{{ s.created|timesince }}</dd>
                         </dl>

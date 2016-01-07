@@ -57,7 +57,7 @@ def usage_string(now, tot):
     def pretty(n):
         """Normally it is fine to round display values to nearest int,
         but for positive values < 1 it is helpful to show that they are nonzero."""
-        if n > 1: return '{:.0f}'.format(n)
+        if n >= 1: return '{:.0f}'.format(n)
         if n > 0: return '{:.1f}'.format(n)
         return '0'
     return '{n} / {t} {p}B'.format(n=pretty(now), t=pretty(tot), p=prefix)
@@ -111,12 +111,20 @@ class IndexView(views.APIView):
                 continue
 
             # everything's sane, so set some fields for the template to use
+            def format_bytes(b): # formatter for bytes
+                p, s = binary_prefix_scale(b)
+                return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
+            i.project = projects[i.tenant_id]
+            i.created = parse_date(i.created)
             i.flavor_name = flav.name
             i.flavor_vcpus = float(flav.vcpus)
             i.flavor_memory_bytes = float(flav.ram) * 1024**2
             i.flavor_disk_bytes = (float(flav.disk) + float(ephemeral)) * 1024**3
-            i.project = projects[i.tenant_id]
-            i.created = parse_date(i.created)
+            i.flavor_description = '{vcpus} / {memory} / {disk}'.format(
+                vcpus  = flav.vcpus,
+                memory = format_bytes(i.flavor_memory_bytes),
+                disk   = format_bytes(i.flavor_disk_bytes)
+            )
 
             # keep a running list of which instances belong to which hypervisors
             if host not in hypervisor_instances: hypervisor_instances[host] = []
