@@ -25,9 +25,6 @@ import re
 from openstack_dashboard.openstack.common import log as logging
 LOG = logging.getLogger(__name__)
 
-# TODO put this in css and make all the values output by template into percentages
-resbar_width = 8 # em
-
 short_name_p = re.compile(r'^tc(?P<n>\d+)$')
 def short_name(hostname):
     m = short_name_p.match(hostname)
@@ -64,6 +61,9 @@ class IndexView(views.APIView):
     template_name = 'admin/hvlist/index.html'
 
     def get_data(self, request, context, *args, **kwargs):
+        # the template wants to display resource usage as percentages, so scale by 100%
+        resbar_width = 100
+
         # grab all the data
         hypervisors = api.nova.hypervisor_list(request)
         instances, _ = api.nova.server_list(request, all_tenants=True)
