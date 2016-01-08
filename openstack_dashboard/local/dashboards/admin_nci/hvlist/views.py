@@ -21,8 +21,6 @@ from openstack_dashboard import api
 from iso8601 import parse_date
 from colorsys import hsv_to_rgb
 import re
-from novaclient.exceptions import NotFound, ClientException
-from django.http import HttpResponseServerError
 
 from openstack_dashboard.openstack.common import log as logging
 LOG = logging.getLogger(__name__)
@@ -92,7 +90,8 @@ class IndexView(views.APIView):
                     flavs[i.flavor['id']] = api.nova.flavor_get(request, i.flavor['id'])
                     LOG.debug('Extra lookup for flavor "'+str(i.flavor['id'])+'"')
                 except NotFound as e:
-                    raise NotFound(e.code, 'Unknown flavor id "'+str(i.flavor['id'])+'"')
+                    messages.error(request, 'Instance '+i.id+' has unknown flavor, so will be ignored.')
+                    continue
 
             # maybe the same thing could happen for projects (haven't actually experienced this one though)
             if i.tenant_id not in projects:
@@ -100,7 +99,8 @@ class IndexView(views.APIView):
                     projects[i.tenant_id] = api.keystone.tenant_get(request, i.tenant_id)
                     LOG.debug('Extra lookup for project "'+str(i.tenant_id)+'"')
                 except NotFound as e:
-                    raise NotFound(e.code, 'Unknown project id "'+str(i.tenant_id)+'"')
+                    messages.error(request, 'Instance '+i.id+' has unknown project, so will be ignored.')
+                    continue
 
             # extract flavor data
             flav = flavs[i.flavor['id']]
