@@ -49,7 +49,7 @@ ul.hypervisors > li.searched {
 ul.hypervisors > li.searched > h1 {
     color: #fff;
 }
-li.oversubscribed {
+li.overcommitted {
     color: white;
     font-weight: bold;
 }
@@ -137,6 +137,10 @@ div.resuse {
     height: 1.2em;
     box-sizing: content-box;
     border: 1px solid #000;
+    overflow: hidden; /* for overcommit */
+}
+div.resuse.overcommitted {
+    border: 1px solid crimson;
 }
 div.resuse * {
     display: inline-block;

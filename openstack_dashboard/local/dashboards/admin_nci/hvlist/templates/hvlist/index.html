@@ -86,7 +86,7 @@
 <h4>{{ ha.name }}</h4>
 {% if ha.hypervisors %}
 <ul class="hypervisors">{% for h in ha.hypervisors %}
-<li style="background-color:{{ h.color }}"{% if h.unow.vcpus > h.utot.vcpus %} class="oversubscribed"{% endif %}>
+<li style="background-color:{{ h.color }}" class="{{h.cpu_overcommit}} {{h.mem_overcommit}} {{h.disk_overcommit}}">
     <h1 class="{{ h.status }} {{ h.state }}">{{ h.short_name }}</h1>
     <span class="instancecount">{{ h.servers|length }}</span>
     <div>{% comment %}nesting div.hypervisor prevents clicking on it from closing it{% endcomment %}
@@ -95,7 +95,7 @@
         <dl>
             <dt class="cpu">CPU:</dt>
             <dd>
-                <div class="resuse">
+                <div class="resuse {{h.cpu_overcommit}}">
                     <span class="resused" style="width:{{ h.cpuu|floatformat:2 }}%"></span>
                     {% for s in h.servers %}
                         <span class="resused {{ s.id }}" style="width:{{ s.cpuu|floatformat:2 }}%"></span>
@@ -107,7 +107,7 @@
 
             <dt class="memory">Memory:</dt>
             <dd>
-                <div class="resuse">
+                <div class="resuse {{h.mem_overcommit}}">
                     <span class="resused" style="width:{{ h.memu|floatformat:2 }}%"></span>
                     {% for s in h.servers %}
                         <span class="resused {{ s.id }}" style="width:{{ s.memu|floatformat:2 }}%"></span>
@@ -119,7 +119,7 @@
 
             <dt class="disk">Disk:</dt>
             <dd>
-                <div class="resuse">
+                <div class="resuse {{h.disk_overcommit}}">
                     <span class="resused" style="width:{{ h.disku|floatformat:2 }}%"></span>
                     {% for s in h.servers %}
                         <span class="resused {{ s.id }}" style="width:{{ s.disku|floatformat:2 }}%"></span>

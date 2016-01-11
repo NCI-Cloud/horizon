@@ -185,6 +185,11 @@ class IndexView(views.APIView):
             h.mem_usage  = usage_string(nmem, h.memory_mb*1024**2)
             h.disk_usage = usage_string(ndis, h.local_gb*1024**3)
 
+            # are resources overcommitted?
+            h.cpu_overcommit  = 'overcommitted' if ncpu > tcpu else ''
+            h.mem_overcommit  = 'overcommitted' if nmem > tmem else ''
+            h.disk_overcommit = 'overcommitted' if ndis > tdis else ''
+
         # sort lists of hypervisors in host aggregates
         for ha in host_aggregates:
             ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
