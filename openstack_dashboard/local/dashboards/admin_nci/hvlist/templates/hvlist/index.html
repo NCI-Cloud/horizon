@@ -16,16 +16,16 @@
 (function($) {
     $(function() {
         var pinned = {};
-        $('dl.server').hide();
-        $('dd.servers li').hover(
+        $('dl.instance').hide();
+        $('dd.instances li').hover(
             function(e) {
-                $(this).find('dl.server').delay(100).show(150);
-                var sel = 'span.resused.' + $(this).find('span.serverid').text();
+                $(this).find('dl.instance').delay(100).show(150);
+                var sel = 'span.resused.' + $(this).find('span.uuid').text();
                 $(this).parents('div.hypervisor').find(sel).addClass('highlighted');
             },
             function(e) {
-                $(this).find('dl.server').stop(true).hide(150);
-                var sel = 'span.resused.' + $(this).find('span.serverid').text();
+                $(this).find('dl.instance').stop(true).hide(150);
+                var sel = 'span.resused.' + $(this).find('span.uuid').text();
                 $(this).parents('div.hypervisor').find(sel).removeClass('highlighted');
             }
         );
@@ -77,7 +77,7 @@
 <dt>Used hypervisors</dt>
 <dd>{{ used_count }}</dd>
 <dt>Instances</dt>
-<dd>{{ server_count }}</dd>
+<dd>{{ instance_count }}</dd>
 </dl>
 <p id="search">Find <input type="search"></p>
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
@@ -88,7 +88,7 @@
 <ul class="hypervisors">{% for h in ha.hypervisors %}
 <li style="background-color:{{ h.color }}" class="{{h.cpu_overcommit}} {{h.mem_overcommit}} {{h.disk_overcommit}}">
     <h1 class="{{ h.status }} {{ h.state }}">{{ h.short_name }}</h1>
-    <span class="instancecount">{{ h.servers|length }}</span>
+    <span class="instancecount">{{ h.instances|length }}</span>
     <div>{% comment %}nesting div.hypervisor prevents clicking on it from closing it{% endcomment %}
     <div class="hypervisor">
         <h1 class="hostname searchtext">{{ h.host }}</h1>
@@ -97,10 +97,9 @@
             <dd>
                 <div class="resuse {{h.cpu_overcommit}}">
                     <span class="resused" style="width:{{ h.cpuu|floatformat:2 }}%"></span>
-                    {% for s in h.servers %}
-                        <span class="resused {{ s.id }}" style="width:{{ s.cpuu|floatformat:2 }}%"></span>
+                    {% for i in h.instances %}
+                        <span class="resused {{ i.id }}" style="width:{{ i.cpuu|floatformat:2 }}%"></span>
                     {% endfor %}
-                    <span class="resfree" style="width:{{ h.cpuf|floatformat:2 }}%"></span>
                 </div>
                 <div class="rescount">{{ h.cpu_usage }}</div>
             </dd>
@@ -109,10 +108,9 @@
             <dd>
                 <div class="resuse {{h.mem_overcommit}}">
                     <span class="resused" style="width:{{ h.memu|floatformat:2 }}%"></span>
-                    {% for s in h.servers %}
-                        <span class="resused {{ s.id }}" style="width:{{ s.memu|floatformat:2 }}%"></span>
+                    {% for i in h.instances %}
+                        <span class="resused {{ i.id }}" style="width:{{ i.memu|floatformat:2 }}%"></span>
                     {% endfor %}
-                    <span class="resfree" style="width:{{ h.memf|floatformat:2 }}%"></span>
                 </div>
                 <div class="rescount">{{ h.mem_usage }}</div>
             </dd>
@@ -121,10 +119,9 @@
             <dd>
                 <div class="resuse {{h.disk_overcommit}}">
                     <span class="resused" style="width:{{ h.disku|floatformat:2 }}%"></span>
-                    {% for s in h.servers %}
-                        <span class="resused {{ s.id }}" style="width:{{ s.disku|floatformat:2 }}%"></span>
+                    {% for i in h.instances %}
+                        <span class="resused {{ i.id }}" style="width:{{ i.disku|floatformat:2 }}%"></span>
                     {% endfor %}
-                    <span class="resfree" style="width:{{ h.diskf|floatformat:2 }}%"></span>
                 </div>
                 <div class="rescount">{{ h.disk_usage }}</div>
             </dd>
@@ -132,25 +129,25 @@
             <dt class="state">State:</dt>
             <dd>{{ h.state }}/{{ h.status }}</dd>
 
-            {% if h.servers %}
+            {% if h.instances %}
                 <dt>Instances:</dt>
-                <dd class="servers">
-                    <ul>{% for s in h.servers %}
+                <dd class="instances">
+                    <ul>{% for i in h.instances %}
                     <li>
-                        {% if s.statussymbol %}
-                            <abbr title="{{s.status}}" class="status-{{s.status}}">{{s.statussymbol|safe}}</abbr>
+                        {% if i.status_symbol %}
+                            <abbr title="{{i.status}}" class="status-{{i.status}}">{{i.status_symbol|safe}}</abbr>
                         {% endif %}
-                        <span class="serverid searchtext">{{ s.id }}</span>
-                        <span class="status searchtext">{{ s.status}}</span>
-                        <span class="servername searchtext">{{ s.name }}</span>
-                        <span class="flavor searchtext">{{ s.flavor_name }}</span>
-                        <dl class="server">
+                        <span class="uuid searchtext">{{ i.id }}</span>
+                        <span class="status searchtext">{{ i.status}}</span>
+                        <span class="name searchtext">{{ i.name }}</span>
+                        <span class="flavor searchtext">{{ i.flavor_name }}</span>
+                        <dl class="instance">
                             <dt>Project</dt>
-                            <dd class="searchtext">{{ s.project.name }}</dd>
+                            <dd class="searchtext">{{ i.project.name }}</dd>
                             <dt>Flavor</dt>
-                            <dd class="searchtext">{{ s.flavor_description }}</dd>
+                            <dd class="searchtext">{{ i.flavor_description }}</dd>
                             <dt>Uptime</dt>
-                            <dd>{{ s.created|timesince }}</dd>
+                            <dd>{{ i.created|timesince }}</dd>
                         </dl>
                     </li>
                 {% endfor %}</ul></dd>

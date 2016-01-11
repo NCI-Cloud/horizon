@@ -97,20 +97,20 @@ div.hypervisor abbr {
     border-bottom: 1px dotted #666;
     margin-right: 1em;
 }
-div.hypervisor > dl > dd.servers {
+div.hypervisor > dl > dd.instances {
     height: auto; /* don't force this dd to have same height as others, since it must expand to fit contents */
 }
-dd.servers span.flavor {
+dd.instances span.flavor {
     color: #999;
     margin-left: 1.5em;
 }
-dd.servers span.serverid, dd.servers span.status {
+dd.instances span.uuid, dd.instances span.status {
     display: none;
 }
-dd.servers span.servername {
+dd.instances span.name {
     border-bottom: 1px dotted #666;
 }
-dl.server {
+dl.instance {
     margin-left: 1em;
     clear: both;
     overflow: auto;
@@ -138,6 +138,7 @@ div.resuse {
     box-sizing: content-box;
     border: 1px solid #000;
     overflow: hidden; /* for overcommit */
+    background: #ccc; /* will appear for unused resources */
 }
 div.resuse.overcommitted {
     border: 1px solid crimson;
@@ -154,9 +155,6 @@ span.resused {
 }
 span.resused.highlighted {
     background: #fff;
-}
-span.resfree {
-    background: #ccc;
 }
 div.rescount {
     margin-left: 1em;

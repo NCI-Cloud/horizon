@@ -25,15 +25,26 @@ import re
 from openstack_dashboard.openstack.common import log as logging
 LOG = logging.getLogger(__name__)
 
-short_name_p = re.compile(r'^tc(?P<n>\d+)$')
+def hypervisor_status_symbol(h):
+    return hypervisor_status_symbol.symbols[h.status] if h.status in hypervisor_status_symbol.symbols else '?'
+hypervisor_status_symbol.symbols = { # see http://docs.openstack.org/developer/nova/v2/2.0_server_concepts.html
+    'ACTIVE'    :  '',
+    'SHUTOFF'   :  '&darr;',
+    'ERROR'     :  '&#x2715;', # this is a big cross X
+}
+
 def short_name(hostname):
-    m = short_name_p.match(hostname)
+    """If the given hostname matches the pattern specified below, return a
+    substring of the hostname (the group from the pattern match)."""
+    m = short_name.p.match(hostname)
     if m:
         return m.group('n')
     return hostname
+short_name.p = re.compile(r'^tc(?P<n>\d+)$')
 
 def binary_prefix_scale(b):
-    """Return (prefix, scale) so that (b) B = (b*scale) (prefix)B."""
+    """Return (prefix, scale) so that (b) B = (b*scale) (prefix)B.
+    For example, binary_prefix_scale(1536) == ('Ki', 1024**-1)."""
     binary = ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei']
     scale = 1
     for p in binary:
@@ -57,13 +68,25 @@ def usage_string(now, tot):
         return '0'
     return '{n} / {t} {p}B'.format(n=pretty(now), t=pretty(tot), p=prefix)
 
+def hypervisor_color(cpu_utilisation, memory_utilisation, disk_utilisation):
+    """Return 12-bit hexadecimal color string (e.g. "#d37") for hypervisor with
+    the given cpu, memory and disk utilisations. (These are floating-point
+    values between 0 and 1.)
+
+    This implementation uses linear interpolation in hsv space between green
+    and red, based on the highest of the three resource utilisations.
+    """
+    load = max(cpu_utilisation, memory_utilisation, disk_utilisation)
+    hue0, hue1 = 1/3., 0 # green, red hard-coded because that's how i roll
+    hue = hue0 + min(load,1)*(hue1-hue0) # lerp
+    r, g, b = hsv_to_rgb(hue, 0.85, 0.9)
+    r, g, b = ('0123456789abcdef'[int(15*x+0.5)] for x in (r,g,b))
+    return '#{0}{1}{2}'.format(r, g, b)
+
 class IndexView(views.APIView):
     template_name = 'admin/hvlist/index.html'
 
     def get_data(self, request, context, *args, **kwargs):
-        # the template wants to display resource usage as percentages, so scale by 100%
-        resbar_width = 100
-
         # grab all the data
         aggregates = api.nova.aggregate_details_list(request)
         hypervisors = api.nova.hypervisor_list(request)
@@ -128,73 +151,68 @@ class IndexView(views.APIView):
                 disk   = format_bytes(i.flavor_disk_bytes)
             )
 
-            # keep a running list of which instances belong to which hypervisors
+            # maintain lists of which instances belong to which hypervisors
             if host not in hypervisor_instances: hypervisor_instances[host] = []
             hypervisor_instances[host].append(i)
 
         for h in hypervisors:
             h.host = h.service['host']
             h.short_name = short_name(h.host)
-            h.servers = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
+            h.instances = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
 
             # figure out which host aggregate contains this host
             for (ha, agg) in zip(host_aggregates, aggregates):
                 if h.host in agg.hosts:
                     ha['hypervisors'].append(h)
 
-            # convert number of vcpus used (n)ow, and (t)otal available, to float for arithmetic later on
-            ncpu, tcpu = float(h.vcpus_used),     float(h.vcpus)
-            nmem, tmem = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2
-            ndis, tdis = float(h.local_gb_used)*1024**3,  float(h.local_gb)*1024**3
-            lcpu, lmem, ldis = ncpu/tcpu, nmem/tmem, ndis/tdis
+            # convert number of vcpus used (n)ow, and (t)otal available, to float, for arithmetic later on
+            vcpus_used,        total_vcpus        = float(h.vcpus_used),             float(h.vcpus)
+            memory_bytes_used, total_memory_bytes = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2
+            disk_bytes_used,   total_disk_bytes   = float(h.local_gb_used)*1024**3,  float(h.local_gb)*1024**3
 
-            if h.state == 'up':
-                # colour based on load of most-utilised resource
-                load = max(lcpu, lmem, ldis)
-                hue0, hue1 = 1/3., 0 # green, red hard-coded because that's how i roll
-                hue = hue0 + min(load,1)*(hue1-hue0) # lerp
-                r, g, b = hsv_to_rgb(hue, 0.85, 0.9)
-                r, g, b = ('0123456789abcdef'[int(15*x+0.5)] for x in (r,g,b))
-                h.color = '#{0}{1}{2}'.format(r, g, b)
-            else:
-                h.color = '#999'
-            h.cpuu, h.memu, h.disku = [resbar_width * x for x in [lcpu, lmem, ldis]]
-            h.cpuf, h.memf, h.diskf = [resbar_width - x for x in [h.cpuu, h.memu, h.disku]]
+            # colour hypervisors that are up
+            h.color = hypervisor_color(vcpus_used/total_vcpus, memory_bytes_used/total_memory_bytes, disk_bytes_used/total_disk_bytes) if h.state == 'up' else '#999'
 
-            # summary for flavor: round values to int and use binary prefixes
-            # also set statussymbol
-            status_symbols = { # see http://docs.openstack.org/developer/nova/v2/2.0_server_concepts.html
-                'ACTIVE'    :  '',
-                'SHUTOFF'   :  '&darr;',
-                'ERROR'     :  '&#x2715;', # this is a big cross X
-            }
-            for s in h.servers:
-                mem_prefix,  mem_scale  = binary_prefix_scale(tmem*1024**2)
-                disk_prefix, disk_scale = binary_prefix_scale(tdis*1024**3)
-                s.statussymbol = status_symbols[s.status] if s.status in status_symbols else '?'
-                s.cpuu  = resbar_width * s.flavor_vcpus / tcpu
-                s.memu  = resbar_width * s.flavor_memory_bytes / tmem
-                s.disku = resbar_width * s.flavor_disk_bytes / tdis
+            # calculate how much of the hypervisor's resources each instance is using
+            for i in h.instances:
+                i.status_symbol = hypervisor_status_symbol(i)
+                i.cpuu  = i.flavor_vcpus / total_vcpus
+                i.memu  = i.flavor_memory_bytes / total_memory_bytes
+                i.disku = i.flavor_disk_bytes / total_disk_bytes
+
             # count resources used by host but not allocated to any instance
-            h.cpuu  = resbar_width * (ncpu - sum(s.flavor_vcpus for s in h.servers))/tcpu
-            h.memu  = resbar_width * (nmem - sum(s.flavor_memory_bytes for s in h.servers))/tmem
-            h.disku = resbar_width * (ndis - sum(s.flavor_disk_bytes for s in h.servers))/tdis
+            h.cpuu  = (vcpus_used - sum(i.flavor_vcpus for i in h.instances)) / total_vcpus
+            h.memu  = (memory_bytes_used - sum(i.flavor_memory_bytes for i in h.instances)) / total_memory_bytes
+            h.disku = (disk_bytes_used - sum(i.flavor_disk_bytes for i in h.instances)) / total_disk_bytes
 
             # usage strings for cpu/mem/disk
-            h.cpu_usage  = '{n} / {t}'.format(n=h.vcpus_used, t=h.vcpus)
-            h.mem_usage  = usage_string(nmem, h.memory_mb*1024**2)
-            h.disk_usage = usage_string(ndis, h.local_gb*1024**3)
+            h.cpu_usage  = '{n} / {t}'.format(n=vcpus_used, t=total_vcpus)
+            h.mem_usage  = usage_string(memory_bytes_used, total_memory_bytes)
+            h.disk_usage = usage_string(disk_bytes_used, total_disk_bytes)
 
             # are resources overcommitted?
-            h.cpu_overcommit  = 'overcommitted' if ncpu > tcpu else ''
-            h.mem_overcommit  = 'overcommitted' if nmem > tmem else ''
-            h.disk_overcommit = 'overcommitted' if ndis > tdis else ''
+            h.cpu_overcommit  = 'overcommitted' if vcpus_used > total_vcpus else ''
+            h.mem_overcommit  = 'overcommitted' if memory_bytes_used > total_memory_bytes else ''
+            h.disk_overcommit = 'overcommitted' if disk_bytes_used > total_disk_bytes else ''
 
         # sort lists of hypervisors in host aggregates
         for ha in host_aggregates:
             ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
 
+        # scale by 100 everything that will be rendered as a percentage...
+        # this would be better in a custom template tag, but here is a link
+        # to the documentation I could find about how to do that in horizon:
+        resbar_width = 100
+        for h in hypervisors:
+            h.cpuu  *= resbar_width
+            h.memu  *= resbar_width
+            h.disku *= resbar_width
+            for i in h.instances:
+                i.cpuu  *= resbar_width
+                i.memu  *= resbar_width
+                i.disku *= resbar_width
+
         context['host_aggregates'] = host_aggregates
-        context['used_count'] = sum(1 for h in hypervisors if h.servers)
-        context['server_count'] = sum(len(h.servers) for h in hypervisors)
+        context['used_count'] = sum(1 for h in hypervisors if h.instances)
+        context['instance_count'] = sum(len(h.instances) for h in hypervisors)
         return context
