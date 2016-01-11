@@ -65,12 +65,14 @@ class IndexView(views.APIView):
         resbar_width = 100
 
         # grab all the data
+        aggregates = api.nova.aggregate_details_list(request)
         hypervisors = api.nova.hypervisor_list(request)
         instances, _ = api.nova.server_list(request, all_tenants=True)
         projects, _ = api.keystone.tenant_list(request)
         flavs = api.nova.flavor_list(request)
 
         # reorganise some
+        host_aggregates = [{'name':a.name, 'hypervisors':[]} for a in aggregates]
         projects = {p.id : p for p in projects}
         flavs = {f.id : f for f in flavs}
         hypervisor_instances = {} # OS-EXT-SRV-ATTR:host : [instance]
@@ -135,6 +137,11 @@ class IndexView(views.APIView):
             h.short_name = short_name(h.host)
             h.servers = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
 
+            # figure out which host aggregate contains this host
+            for (ha, agg) in zip(host_aggregates, aggregates):
+                if h.host in agg.hosts:
+                    ha['hypervisors'].append(h)
+
             # convert number of vcpus used (n)ow, and (t)otal available, to float for arithmetic later on
             ncpu, tcpu = float(h.vcpus_used),     float(h.vcpus)
             nmem, tmem = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2
@@ -178,8 +185,11 @@ class IndexView(views.APIView):
             h.mem_usage  = usage_string(nmem, h.memory_mb*1024**2)
             h.disk_usage = usage_string(ndis, h.local_gb*1024**3)
 
+        # sort lists of hypervisors in host aggregates
+        for ha in host_aggregates:
+            ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
 
-        context['hypervisors'] = hypervisors
+        context['host_aggregates'] = host_aggregates
         context['used_count'] = sum(1 for h in hypervisors if h.servers)
         context['server_count'] = sum(len(h.servers) for h in hypervisors)
         return context

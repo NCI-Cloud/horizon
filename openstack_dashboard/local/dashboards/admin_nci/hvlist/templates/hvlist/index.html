@@ -82,7 +82,10 @@
 <p id="search">Find <input type="search"></p>
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
 {% spaceless %}
-<ul class="hypervisors">{% for h in hypervisors %}
+{% for ha in host_aggregates %}
+<h4>{{ ha.name }}</h4>
+{% if ha.hypervisors %}
+<ul class="hypervisors">{% for h in ha.hypervisors %}
 <li style="background-color:{{ h.color }}"{% if h.unow.vcpus > h.utot.vcpus %} class="oversubscribed"{% endif %}>
     <h1 class="{{ h.status }} {{ h.state }}">{{ h.short_name }}</h1>
     <span class="instancecount">{{ h.servers|length }}</span>
@@ -155,7 +158,7 @@
         </dl>
     </div>
     </div>
-</li>{% endfor %}</ul>
+</li>{% endfor %}</ul>{% else %}<p>This host aggregate contains no hosts.</p>{% endif %}{% endfor %}
 {% endspaceless %}
 {% endblock %}
 
