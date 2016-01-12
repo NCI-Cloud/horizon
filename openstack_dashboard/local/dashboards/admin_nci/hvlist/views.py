@@ -268,6 +268,7 @@ class IndexView(views.APIView):
                 i.memu  *= resbar_width / h.max_memory_bytes
                 i.disku *= resbar_width / h.max_disk_bytes
 
+        context['total_hypervisors'] = sum(len(h['hypervisors']) for h in host_aggregates)
         context['host_aggregates'] = host_aggregates
         context['used_count'] = sum(1 for h in hypervisors if h.instances)
         context['instance_count'] = sum(len(h.instances) for h in hypervisors)
