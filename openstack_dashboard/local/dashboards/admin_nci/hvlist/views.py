@@ -83,6 +83,37 @@ def hypervisor_color(cpu_utilisation, memory_utilisation, disk_utilisation):
     r, g, b = ('0123456789abcdef'[int(15*x+0.5)] for x in (r,g,b))
     return '#{0}{1}{2}'.format(r, g, b)
 
+def get_overcommit_ratios(confpath='/etc/nova/nova.conf'):
+    """Extract and return {cpu,ram,disk}_allocation_ratio values from the given
+    conf file. If any value is not found, 1 will be returned for it. The
+    return value is a dict, e.g. {'cpu':1.0, 'ram':1.5, 'disk':1.0}.
+
+    The result is saved, so the conf file should only be read once. This means
+    that if the conf file changes, this module will need to be reloaded.
+
+    This is not meant to be particularly robust; it is inherently hacky. There
+    is apparently no way to get these values properly from the api.
+    """
+    resources = ['cpu', 'ram', 'disk'] # as they appear in nova.conf
+    if not hasattr(get_overcommit_ratios, 'ratios'):
+        rs = {}
+        p = re.compile(r'^[^#]*(?P<resource>' + '|'.join(resources) + r')_allocation_ratio\s*=\s*(?P<value>[^\s]+)')
+        with open(confpath, 'r') as f:
+            for l in f.read().split('\n'):
+                m = p.search(l)
+                if m:
+                    try:
+                        rs[m.group('resource')] = float(m.group('value'))
+                    except ValueError:
+                        # forget any previous value, since it was overwritten by something unintelligible
+                        del rs[m.group('resource')]
+                        continue
+        for r in resources:
+            if r not in rs:
+                rs[r] = 1. # make sure everything is defined, though maybe this should cause a warning
+        get_overcommit_ratios.ratios = rs
+    return get_overcommit_ratios.ratios
+
 class IndexView(views.APIView):
     template_name = 'admin/hvlist/index.html'
 
@@ -155,48 +186,70 @@ class IndexView(views.APIView):
             if host not in hypervisor_instances: hypervisor_instances[host] = []
             hypervisor_instances[host].append(i)
 
-        for h in hypervisors:
-            h.host = h.service['host']
-            h.short_name = short_name(h.host)
-            h.instances = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
+        # get overcommit values
+        oc = get_overcommit_ratios()
+        p = re.compile(r'^(?P<resource>cpu|ram|disk)_allocation_ratio$')
+        for (a, h) in zip(aggregates, host_aggregates):
+            h['overcommit'] = {k:oc[k] for k in oc} # copy default overcommit values
+            for k in a.metadata:
+                m = p.match(k)
+                if m:
+                    try:
+                        h['overcommit'][m.group('resource')] = float(a.metadata[k])
+                    except ValueError:
+                        LOG.debug('Could not parse host aggregate "{key}" metadata value "{value}" as float.'.format(key=k, value=a.metadata[k]))
+                        continue
+            h['pretty_overcommit'] = '{cpu} / {ram} / {disk}'.format(**h['overcommit'])
 
-            # figure out which host aggregate contains this host
+        # assign hosts to host aggregates
+        for h in hypervisors:
             for (ha, agg) in zip(host_aggregates, aggregates):
-                if h.host in agg.hosts:
+                if h.service['host'] in agg.hosts:
                     ha['hypervisors'].append(h)
 
-            # convert number of vcpus used (n)ow, and (t)otal available, to float, for arithmetic later on
-            vcpus_used,        total_vcpus        = float(h.vcpus_used),             float(h.vcpus)
-            memory_bytes_used, total_memory_bytes = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2
-            disk_bytes_used,   total_disk_bytes   = float(h.local_gb_used)*1024**3,  float(h.local_gb)*1024**3
-
-            # colour hypervisors that are up
-            h.color = hypervisor_color(vcpus_used/total_vcpus, memory_bytes_used/total_memory_bytes, disk_bytes_used/total_disk_bytes) if h.state == 'up' else '#999'
-
-            # calculate how much of the hypervisor's resources each instance is using
-            for i in h.instances:
-                i.status_symbol = hypervisor_status_symbol(i)
-                i.cpuu  = i.flavor_vcpus / total_vcpus
-                i.memu  = i.flavor_memory_bytes / total_memory_bytes
-                i.disku = i.flavor_disk_bytes / total_disk_bytes
-
-            # count resources used by host but not allocated to any instance
-            h.cpuu  = (vcpus_used - sum(i.flavor_vcpus for i in h.instances)) / total_vcpus
-            h.memu  = (memory_bytes_used - sum(i.flavor_memory_bytes for i in h.instances)) / total_memory_bytes
-            h.disku = (disk_bytes_used - sum(i.flavor_disk_bytes for i in h.instances)) / total_disk_bytes
-
-            # usage strings for cpu/mem/disk
-            h.cpu_usage  = '{n} / {t}'.format(n=vcpus_used, t=total_vcpus)
-            h.mem_usage  = usage_string(memory_bytes_used, total_memory_bytes)
-            h.disk_usage = usage_string(disk_bytes_used, total_disk_bytes)
-
-            # are resources overcommitted?
-            h.cpu_overcommit  = 'overcommitted' if vcpus_used > total_vcpus else ''
-            h.mem_overcommit  = 'overcommitted' if memory_bytes_used > total_memory_bytes else ''
-            h.disk_overcommit = 'overcommitted' if disk_bytes_used > total_disk_bytes else ''
-
-        # sort lists of hypervisors in host aggregates
         for ha in host_aggregates:
+            for h in ha['hypervisors']:
+                h.host = h.service['host']
+                h.short_name = short_name(h.host)
+                h.instances = hypervisor_instances[h.host] if h.host in hypervisor_instances else []
+
+
+                # convert number of vcpus used (n)ow, and (t)otal available, to float, for arithmetic later on
+                vcpus_used,        total_vcpus        = float(h.vcpus_used),             float(h.vcpus)             * ha['overcommit']['cpu']
+                memory_bytes_used, total_memory_bytes = float(h.memory_mb_used)*1024**2, float(h.memory_mb)*1024**2 * ha['overcommit']['ram']
+                disk_bytes_used,   total_disk_bytes   = float(h.local_gb_used)*1024**3,  float(h.local_gb)*1024**3  * ha['overcommit']['disk']
+
+                # save these values for scaling visual elements later on...
+                h.max_vcpus = max(vcpus_used, total_vcpus)
+                h.max_memory_bytes = max(memory_bytes_used, total_memory_bytes)
+                h.max_disk_bytes = max(disk_bytes_used, total_disk_bytes)
+
+                # colour hypervisors that are up
+                h.color = hypervisor_color(vcpus_used/total_vcpus, memory_bytes_used/total_memory_bytes, disk_bytes_used/total_disk_bytes) if h.state == 'up' else '#999'
+
+                # calculate how much of the hypervisor's resources each instance is using
+                for i in h.instances:
+                    i.status_symbol = hypervisor_status_symbol(i)
+                    i.cpuu  = i.flavor_vcpus
+                    i.memu  = i.flavor_memory_bytes
+                    i.disku = i.flavor_disk_bytes
+
+                # count resources used by host but not allocated to any instance
+                h.cpuu  = (vcpus_used - sum(i.flavor_vcpus for i in h.instances))
+                h.memu  = (memory_bytes_used - sum(i.flavor_memory_bytes for i in h.instances))
+                h.disku = (disk_bytes_used - sum(i.flavor_disk_bytes for i in h.instances))
+
+                # usage strings for cpu/mem/disk
+                h.cpu_usage  = '{n:d} / {t:.2g}'.format(n=int(vcpus_used), t=total_vcpus)
+                h.mem_usage  = usage_string(memory_bytes_used, total_memory_bytes)
+                h.disk_usage = usage_string(disk_bytes_used, total_disk_bytes)
+
+                # are resources overcommitted?
+                h.cpu_overcommit  = 'overcommitted' if vcpus_used > total_vcpus else ''
+                h.mem_overcommit  = 'overcommitted' if memory_bytes_used > total_memory_bytes else ''
+                h.disk_overcommit = 'overcommitted' if disk_bytes_used > total_disk_bytes else ''
+
+            # sort lists of hypervisors in host aggregates
             ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
 
         # scale by 100 everything that will be rendered as a percentage...
@@ -204,13 +257,13 @@ class IndexView(views.APIView):
         # to the documentation I could find about how to do that in horizon:
         resbar_width = 100
         for h in hypervisors:
-            h.cpuu  *= resbar_width
-            h.memu  *= resbar_width
-            h.disku *= resbar_width
+            h.cpuu  *= resbar_width / h.max_vcpus
+            h.memu  *= resbar_width / h.max_memory_bytes
+            h.disku *= resbar_width / h.max_disk_bytes
             for i in h.instances:
-                i.cpuu  *= resbar_width
-                i.memu  *= resbar_width
-                i.disku *= resbar_width
+                i.cpuu  *= resbar_width / h.max_vcpus
+                i.memu  *= resbar_width / h.max_memory_bytes
+                i.disku *= resbar_width / h.max_disk_bytes
 
         context['host_aggregates'] = host_aggregates
         context['used_count'] = sum(1 for h in hypervisors if h.instances)

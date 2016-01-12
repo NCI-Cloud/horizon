@@ -83,7 +83,7 @@
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
 {% spaceless %}
 {% for ha in host_aggregates %}
-<h4>{{ ha.name }}</h4>
+<h4>{{ ha.name }} <span class="overcommit">overcommit ratios {{ha.pretty_overcommit}}</span></h4>
 {% if ha.hypervisors %}
 <ul class="hypervisors">{% for h in ha.hypervisors %}
 <li style="background-color:{{ h.color }}" class="{{h.cpu_overcommit}} {{h.mem_overcommit}} {{h.disk_overcommit}}">
