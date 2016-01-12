@@ -98,16 +98,19 @@ def get_overcommit_ratios(confpath='/etc/nova/nova.conf'):
     if not hasattr(get_overcommit_ratios, 'ratios'):
         rs = {}
         p = re.compile(r'^[^#]*(?P<resource>' + '|'.join(resources) + r')_allocation_ratio\s*=\s*(?P<value>[^\s]+)')
-        with open(confpath, 'r') as f:
-            for l in f.read().split('\n'):
-                m = p.search(l)
-                if m:
-                    try:
-                        rs[m.group('resource')] = float(m.group('value'))
-                    except ValueError:
-                        # forget any previous value, since it was overwritten by something unintelligible
-                        del rs[m.group('resource')]
-                        continue
+        try:
+            with open(confpath, 'r') as f:
+                for l in f.read().split('\n'):
+                    m = p.search(l)
+                    if m:
+                        try:
+                            rs[m.group('resource')] = float(m.group('value'))
+                        except ValueError:
+                            # forget any previous value, since it was overwritten by something unintelligible
+                            del rs[m.group('resource')]
+                            continue
+        except IOError as ex:
+            LOG.debug('Error reading {}: {}'.format(confpath, ex))
         for r in resources:
             if r not in rs:
                 rs[r] = 1. # make sure everything is defined, though maybe this should cause a warning
