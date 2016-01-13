@@ -21,6 +21,7 @@ from openstack_dashboard import api
 from iso8601 import parse_date
 from colorsys import hsv_to_rgb
 import re
+from django.conf import settings
 
 from openstack_dashboard.openstack.common import log as logging
 LOG = logging.getLogger(__name__)
@@ -83,39 +84,18 @@ def hypervisor_color(cpu_utilisation, memory_utilisation, disk_utilisation):
     r, g, b = ('0123456789abcdef'[int(15*x+0.5)] for x in (r,g,b))
     return '#{0}{1}{2}'.format(r, g, b)
 
-def get_overcommit_ratios(confpath='/etc/nova/nova.conf'):
-    """Extract and return {cpu,ram,disk}_allocation_ratio values from the given
-    conf file. If any value is not found, 1 will be returned for it. The
-    return value is a dict, e.g. {'cpu':1.0, 'ram':1.5, 'disk':1.0}.
-
-    The result is saved, so the conf file should only be read once. This means
-    that if the conf file changes, this module will need to be reloaded.
-
-    This is not meant to be particularly robust; it is inherently hacky. There
-    is apparently no way to get these values properly from the api.
+def get_overcommit_ratios():
+    """Return {cpu,ram,disk}_allocation_ratio values from django settings.
+    Return 1.0 for any missing allocation ratios.
     """
-    resources = ['cpu', 'ram', 'disk'] # as they appear in nova.conf
-    if not hasattr(get_overcommit_ratios, 'ratios'):
-        rs = {}
-        p = re.compile(r'^[^#]*(?P<resource>' + '|'.join(resources) + r')_allocation_ratio\s*=\s*(?P<value>[^\s]+)')
-        try:
-            with open(confpath, 'r') as f:
-                for l in f.read().split('\n'):
-                    m = p.search(l)
-                    if m:
-                        try:
-                            rs[m.group('resource')] = float(m.group('value'))
-                        except ValueError:
-                            # forget any previous value, since it was overwritten by something unintelligible
-                            del rs[m.group('resource')]
-                            continue
-        except IOError as ex:
-            LOG.debug('Error reading {}: {}'.format(confpath, ex))
-        for r in resources:
-            if r not in rs:
-                rs[r] = 1. # make sure everything is defined, though maybe this should cause a warning
-        get_overcommit_ratios.ratios = rs
-    return get_overcommit_ratios.ratios
+    setting = 'NCI_NOVA_COMMIT_RATIOS'
+    resources = ['cpu', 'ram', 'disk'] # hard-coded strings to match names in nova.conf
+    ratios = getattr(settings, setting, {})
+    for r in resources:
+        if r not in ratios:
+            LOG.debug('Missing {} overcommit ratio in {}; assuming value of 1.'.format(r, setting))
+            ratios[r] = 1.
+    return ratios
 
 class IndexView(views.APIView):
     template_name = 'admin/hvlist/index.html'
