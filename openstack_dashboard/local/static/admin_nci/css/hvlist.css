@@ -8,6 +8,7 @@ ul.hypervisors {
 	background-color: #f1f1f1;
 	padding: 1em;
 	text-align: center;
+	margin-bottom: 25px; /* to match dashboard css .table; one day this will all be much cleaner... */
 }
 ul.hypervisors > li {
 	display: inline-block;

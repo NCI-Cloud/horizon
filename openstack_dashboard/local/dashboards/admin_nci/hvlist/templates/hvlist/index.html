@@ -83,7 +83,7 @@
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
 {% spaceless %}
 {% for ha in host_aggregates %}
-<h4>{{ ha.name }}</h4>
+<h3>{{ ha.name }}</h3>
 <table class="table table-bordered">
 <thead>
   <tr class="table_caption">{# the css assumes that the header row comes after a tr.table_caption, so this has to be here to make the table render correctly #}</tr>
@@ -198,7 +198,31 @@
         </dl>
     </div>
     </div>
-</li>{% endfor %}</ul>{% else %}<p>This host aggregate contains no hosts.</p>{% endif %}{% endfor %}
+</li>{% endfor %}</ul>{% else %}<p>This host aggregate contains no hosts.</p>{% endif %}
+<table class="table table-bordered">
+<thead>
+  <tr class="table_caption">{# see other <table> #}</tr>
+  <tr>
+    <th>Code</th>
+    <th>Project</th>
+    <th>VCPUs</th>
+    <th>RAM</th>
+    <th><abbr title="1 SU ~ 1 VCPU x {{ su_ram_per_vcpu }} RAM">SUs</abbr></th>
+  </tr>
+</thead>
+<tbody>
+{% for pu in ha.project_usage %}
+  <tr>
+    <td>{{ pu.project.name }}</td>
+    <td>{{ pu.project.description }}</td>
+    <td>{{ pu.cpu }}</td>
+    <td>{{ pu.ram }}</td>
+    <td>{{ pu.su }}</td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+{% endfor %}
 {% endspaceless %}
 {% endblock %}
 
