@@ -83,7 +83,50 @@
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
 {% spaceless %}
 {% for ha in host_aggregates %}
-<h4>{{ ha.name }} <span class="overcommit">overcommit ratios {{ha.pretty_overcommit}}</span></h4>
+<h4>{{ ha.name }}</h4>
+<table class="table table-bordered">
+<thead>
+  <tr class="table_caption">{# the css assumes that the header row comes after a tr.table_caption, so this has to be here to make the table render correctly #}</tr>
+  <tr>
+    <th></th>
+    <th>VCPUs</th>
+    <th>RAM</th>
+    <th>Disk</th>
+  </tr>
+</thead>
+<tbody>
+  <tr>
+    <td>Overcommit ratio</td>
+    <td>{{ ha.overcommit.cpu|floatformat:2 }}</td>
+    <td>{{ ha.overcommit.ram|floatformat:2 }}</td>
+    <td>{{ ha.overcommit.disk|floatformat:2 }}</td>
+  </tr>
+  <tr>
+    <td>Physical count</td>
+    <td>{{ ha.count.physical.cpu }}</td>
+    <td>{{ ha.count.physical.ram }}</td>
+    <td>{{ ha.count.physical.disk }}</td>
+  </tr>
+  <tr>
+    <td>Maximum allocation</td>
+    <td>{{ ha.count.max.cpu }}</td>
+    <td>{{ ha.count.max.ram }}</td>
+    <td>{{ ha.count.max.disk }}</td>
+  </tr>
+  <tr>
+    <td>Allocated</td>
+    <td>{{ ha.count.allocated.cpu }}</td>
+    <td>{{ ha.count.allocated.ram }}</td>
+    <td>{{ ha.count.allocated.disk }}</td>
+  </tr>
+  <tr>
+    <td>Remaining</td>
+    <td>{{ ha.count.remaining.cpu }}</td>
+    <td>{{ ha.count.remaining.ram }}</td>
+    <td>{{ ha.count.remaining.disk }}</td>
+  </tr>
+</tbody>
+</table>
 {% if ha.hypervisors %}
 <ul class="hypervisors">{% for h in ha.hypervisors %}
 <li style="background-color:{{ h.color }}" class="{{h.cpu_overcommit}} {{h.mem_overcommit}} {{h.disk_overcommit}}">

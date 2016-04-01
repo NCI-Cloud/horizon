@@ -55,6 +55,10 @@ def binary_prefix_scale(b):
         b /= 1024.
     return (p, scale)
 
+def format_bytes(b):
+    p, s = binary_prefix_scale(float(b))
+    return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
+
 def usage_string(now, tot):
     """Return something like "0.5 / 1.0 kB" from now,tot=512,1024."""
     prefix, scale = binary_prefix_scale(tot)
@@ -150,9 +154,6 @@ class IndexView(views.APIView):
                 continue
 
             # everything's sane, so set some fields for the template to use
-            def format_bytes(b): # formatter for bytes
-                p, s = binary_prefix_scale(b)
-                return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
             i.project = projects[i.tenant_id]
             i.created = parse_date(i.created)
             i.flavor_name = flav.name
@@ -169,7 +170,18 @@ class IndexView(views.APIView):
             if host not in hypervisor_instances: hypervisor_instances[host] = []
             hypervisor_instances[host].append(i)
 
-        # get overcommit values
+        # assign hosts to host aggregates
+        for h in hypervisors:
+            for (ha, agg) in zip(host_aggregates, aggregates):
+                if h.service['host'] in agg.hosts:
+                    ha['hypervisors'].append(h)
+
+        # get overcommit values and allocated/available resource counts
+        key_map = { # map overcommit ratio key -> accessors into hypervisor object for corresponding resource
+            'cpu'  : (lambda h: h.vcpus,     lambda h: h.vcpus_used),
+            'ram'  : (lambda h: h.memory_mb, lambda h: h.memory_mb_used),
+            'disk' : (lambda h: h.local_gb,  lambda h: h.local_gb_used)
+        }
         oc = get_overcommit_ratios()
         p = re.compile(r'^(?P<resource>cpu|ram|disk)_allocation_ratio$')
         for (a, h) in zip(aggregates, host_aggregates):
@@ -182,13 +194,16 @@ class IndexView(views.APIView):
                     except ValueError:
                         LOG.debug('Could not parse host aggregate "{key}" metadata value "{value}" as float.'.format(key=k, value=a.metadata[k]))
                         continue
-            h['pretty_overcommit'] = '{cpu} / {ram} / {disk}'.format(**h['overcommit'])
+            h['count'] = {}
+            h['count']['physical'] = {k:sum(key_map[k][0](hyp) for hyp in h['hypervisors']) for k in oc}
+            h['count']['max'] = {k:h['count']['physical'][k]*h['overcommit'][k] for k in oc}
+            h['count']['allocated'] = {k:sum(key_map[k][1](hyp) for hyp in h['hypervisors']) for k in oc}
+            h['count']['remaining'] = {k:h['count']['max'][k] - h['count']['allocated'][k] for k in oc}
 
-        # assign hosts to host aggregates
-        for h in hypervisors:
-            for (ha, agg) in zip(host_aggregates, aggregates):
-                if h.service['host'] in agg.hosts:
-                    ha['hypervisors'].append(h)
+            # format counts now that they're calculated
+            for k in h['count']:
+                h['count'][k]['ram']  = format_bytes(1024*1024*h['count'][k]['ram'])
+                h['count'][k]['disk'] = format_bytes(1024*1024*1024*h['count'][k]['disk'])
 
         for ha in host_aggregates:
             for h in ha['hypervisors']:

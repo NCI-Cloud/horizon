@@ -53,12 +53,6 @@ li.overcommitted {
     color: white;
     font-weight: bold;
 }
-span.overcommit {
-    font-size: 80%;
-    color: lightgray;
-    margin-left: 2em;
-    vertical-align: middle;
-}
 div.hypervisor {
     line-height: 2em;
 	background: #eee;
