@@ -198,4 +198,4 @@ input[type=search] {
 }
 .status-ACTIVE  { color: #999; }
 .status-SHUTOFF { color: #333; }
-.status-ERRORu  { color: #900; }
+.status-ERROR   { color: #900; }
