@@ -18,36 +18,12 @@
 import types
 import itertools
 
-from .constants import short_name, PROJECTS_TEMPLATE_NAME, SUMMARY_TEMPLATE_NAME
+from .constants import PROJECTS_TEMPLATE_NAME, SUMMARY_TEMPLATE_NAME
 from . import tables
 
 from horizon import tabs
-from horizon import messages
-
-from openstack_dashboard import api
-from openstack_dashboard.openstack.common import log as logging
 
 from django.utils.translation import ugettext_lazy as _
-
-# surely there is a cleaner way to do this...?
-from novaclient.exceptions import NotFound as NotFoundNova
-from keystoneclient.openstack.common.apiclient.exceptions import NotFound as NotFoundKeystone
-
-LOG = logging.getLogger(__name__)
-
-# TODO this should probably be in views.py or maybe even models.py
-class HostAggregate(object):
-    """
-    Has attributes:
-      aggregate   --  object from api.nova.aggregate_details_list
-      hypervisors --  list of objects with attributes including
-                        instances -- list of objects with attributes including
-                                       project
-                                       flavor
-    """
-    def __init__(self, aggregate, hypervisors=None):
-        self.aggregate = aggregate
-        self.hypervisors = [] if hypervisors == None else hypervisors
 
 class ProjectUsage(object):
     """
@@ -83,12 +59,15 @@ class ProjectsTab(tabs.TableTab):
         return AggregateProjectUsageTable
 
     def __init__(self, tab_group, request):
-        # load host aggregate data, so we can set up tables for tabs.TableTab.__init__
-        aggregates = api.nova.aggregate_details_list(request)
-        self.host_aggregates = [HostAggregate(aggregate=a) for a in aggregates]
+        try:
+            # make sure host aggregates are exposed
+            self.host_aggregates = tab_group.host_aggregates
+        except AttributeError:
+            # raise the exception with slightly better description
+            raise AttributeError('{} must be part of a tab group that exposes host aggregates'.format(self.__class__.__name__))
 
         # define table_classes, which get used in TableTab.__init__
-        ProjectsTab.table_classes = [ProjectsTab.table_factory(agg) for agg in aggregates]
+        ProjectsTab.table_classes = [ProjectsTab.table_factory(a.aggregate) for a in self.host_aggregates]
 
         # set up get_{{ table_name }}_data methods, which get called by TableTab
         for ha in self.host_aggregates:
@@ -121,83 +100,11 @@ class ProjectsTab(tabs.TableTab):
         ) for p in projects], key=lambda pu:pu.vcpus, reverse=True)
 
     def get_context_data(self, request, **kwargs):
-        """
-        Get lots of nova/keystone data and return dict with keys:
-            tables  -- list of DataTable objects to be rendered in this tab
-            X_table -- individual DataTable objects, for X in aggregate names
-
-        The overall process is to load all necessary data first, populating the
-        list self.host_aggregates of HostAggregate objects, then to call
-        super.get_context_data, which in turn makes calls back to get_{}_data
-        for each table in the tab, and then finally to fill the return value.
-        Documenting this because it feels a little weird calling the parent's
-        function halfway through the child's function.
-        """
-
-        # TODO this should probably actually be done in IndexView (views.py)
-        hypervisors  = api.nova.hypervisor_list(request)
-        instances, _ = api.nova.server_list(request, all_tenants=True)
-        projects, _  = api.keystone.tenant_list(request)
-        flavors      = api.nova.flavor_list(request)
-
-        # define these dicts to make it easier to look up objects
-        flavor_d     = {f.id : f for f in flavors}
-        project_d    = {p.id : p for p in projects}
-        hypervisor_d = {short_name(getattr(h, h.NAME_ATTR)) : h for h in hypervisors}
-
-        # check if any instances are missing necessary data, and if so, skip them
-        hypervisor_instances = {} # otherwise, add them to this (short_name => [instance])
-        for i in instances:
-            # make sure we can tell which hypervisor is running this instance; if not, ignore it
-            try:
-                host = short_name(i.host_server)
-                if host not in hypervisor_d:
-                    messages.error(request, 'Instance {} has unknown host, so was ignored.'.format(i.id))
-                    continue
-            except AttributeError:
-                messages.error(request, 'Instance {} is missing host, so was ignored.'.format(i.id))
-                continue
-
-            # api.nova.flavor_list (which wraps novaclient.flavors.list) does not get all flavors,
-            # so if we have a reference to one that hasn't been retrieved, try looking it up specifically
-            # (wrap this rather trivially in a try block to make the error less cryptic)
-            if i.flavor['id'] not in flavor_d:
-                try:
-                    LOG.debug('Extra lookup for flavor "{}"'.format(i.flavor['id']))
-                    flavor_d[i.flavor['id']] = api.nova.flavor_get(request, i.flavor['id'])
-                except NotFoundNova:
-                    messages.error(request, 'Instance {} has unknown flavor, so was ignored.'.format(i.id))
-                    continue
-
-            # maybe the same thing could happen for projects (haven't actually experienced this one though)
-            if i.tenant_id not in project_d:
-                try:
-                    LOG.debug('Extra lookup for project "{}"'.format(i.tenant_id))
-                    project_d[i.tenant_id] = api.keystone.tenant_get(request, i.tenant_id)
-                except NotFoundKeystone:
-                    messages.error(request, 'Instance {} has unknown project, so was ignored.'.format(i.id))
-                    continue
-
-            # expose related objects, so that no further lookups are required
-            i.flavor  = flavor_d[i.flavor['id']]
-            i.project = project_d[i.tenant_id]
-
-            # all the necessary information is present, so populate the dict
-            if host not in hypervisor_instances:
-                hypervisor_instances[host] = []
-            hypervisor_instances[host].append(i)
-
-        # assign hypervisors to host aggregates
-        for h in hypervisors:
-            h.instances = hypervisor_instances[short_name(getattr(h, h.NAME_ATTR))]
-            for ha in self.host_aggregates:
-                if h.service['host'] in ha.aggregate.hosts:
-                    ha.hypervisors.append(h)
-
         # parent sets "{{ table_name }}_table" keys corresponding to items in table_classes
+        # (this call causes calls back to get_{}_data for each table in the Tab)
         context = super(ProjectsTab, self).get_context_data(request, **kwargs)
         
-        # now reorganise that a bit so that the template can iterate dynamically
+        # reorganise that a bit so that the template can iterate dynamically
         context['tables'] = [context['{}_table'.format(ha.aggregate.name)] for ha in self.host_aggregates]
         return context
 
@@ -214,3 +121,7 @@ class TabGroup(tabs.TabGroup):
     tabs = (SummaryTab, ProjectsTab)
     slug = "pupha" # this is url slug, used with ..
     sticky = True # .. this to store tab state across requests
+    def __init__(self, request, **kwargs):
+        if 'host_aggregates' in kwargs:
+            self.host_aggregates = kwargs['host_aggregates']
+        super(TabGroup, self).__init__(request, **kwargs)
