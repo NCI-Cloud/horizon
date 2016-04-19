@@ -35,9 +35,10 @@ def binary_prefix_scale(b):
         b /= 1024.
     return (p, scale)
 
-def format_bytes(b):
+def format_bytes(b, precision=0):
     p, s = binary_prefix_scale(float(b))
-    return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
+    format_str = '{{scaled:.{}f}} {{prefix}}B'.format(max(0, int(precision)))
+    return format_str.format(scaled=b*s, prefix=p)
 
 def su(vcpus, memory_mb, precision=1):
     return ('{:.'+str(max(0, int(precision)))+'f}').format(max(vcpus, memory_mb/su.memory_mb))

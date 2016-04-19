@@ -25,20 +25,10 @@ from horizon import tabs
 
 from django.utils.translation import ugettext_lazy as _
 
-class ProjectUsage(object):
-    """
-    TODO document
-    """
-    def __init__(self, project, vcpus, memory_mb):
-        self.id        = project.id # TODO filter breaks without this, but not sure where it's actually required...
-        self.project   = project
-        self.vcpus     = vcpus
-        self.memory_mb = memory_mb
-
-    def __str__(self):
-        return 'ProjectUsage(pid={pid}, vcpus={vcpus}, memory_mb={mmb})'.format(pid=self.project.id, vcpus=self.vcpus, mmb=self.memory_mb)
-    def __repr__(self):
-        return self.__str__()
+class DictObject(object):
+    """Would have thought that this would be built-in somehow...."""
+    def __init__(self, *args, **kwargs):
+        self.__dict__.update(kwargs)
 
 class ProjectsTab(tabs.TableTab):
     """
@@ -47,8 +37,8 @@ class ProjectsTab(tabs.TableTab):
     If there is ever a host aggregate with name "context" or "aggregate", this
     will break. This is because TableTab makes calls to "get_{}_data".
     """
-    name = _("Projects") # rendered as text in html
-    slug = "projects" # url slug and id attribute (=> unique)
+    name = _('Projects') # rendered as text in html
+    slug = 'projects' # url slug and id attribute (=> unique)
     template_name = PROJECTS_TEMPLATE_NAME
 
     @staticmethod
@@ -93,7 +83,8 @@ class ProjectsTab(tabs.TableTab):
         projects = set([i.project for i in instances])
 
         # sum usage per project, and sort from most vcpus to fewest
-        return sorted([ProjectUsage(
+        return sorted([DictObject(
+            id        = p.id,
             project   = p, 
             vcpus     = sum(i.flavor.vcpus for i in instances if i.project == p),
             memory_mb = sum(i.flavor.ram   for i in instances if i.project == p)
@@ -103,19 +94,42 @@ class ProjectsTab(tabs.TableTab):
         # parent sets "{{ table_name }}_table" keys corresponding to items in table_classes
         # (this call causes calls back to get_{}_data for each table in the Tab)
         context = super(ProjectsTab, self).get_context_data(request, **kwargs)
-        
+
         # reorganise that a bit so that the template can iterate dynamically
         context['tables'] = [context['{}_table'.format(ha.aggregate.name)] for ha in self.host_aggregates]
         return context
 
+
 class SummaryTab(tabs.TableTab):
+    """
+    Displays resource usage (physical count, overcommit value, used, remaining)
+    for vcpus and memory for each host aggregate.
+
+    It's a bit ugly.
+    """
     table_classes = (tables.SummaryTable,)
-    name = _("Summary")
-    slug = "summary"
+    name = _('Summary')
+    slug = 'summary'
     template_name = SUMMARY_TEMPLATE_NAME
 
+    def __init__(self, tab_group, request):
+        try:
+            self.host_aggregates = tab_group.host_aggregates
+        except AttributeError:
+            raise AttributeError('{} must be part of a tab group that exposes host aggregates'.format(self.__class__.__name__))
+        super(SummaryTab, self).__init__(tab_group, request)
+
     def get_summary_data(self):
-        return [] # TODO implement
+        return [DictObject(
+            id             = a.aggregate.id,
+            name           = a.aggregate.name,
+            vcpus          = sum(h.vcpus for h in a.hypervisors),
+            memory_mb      = sum(h.memory_mb for h in a.hypervisors),
+            vcpus_used     = sum(h.vcpus_used for h in a.hypervisors),
+            memory_mb_used = sum(h.memory_mb_used for h in a.hypervisors),
+            vcpu_o         = a.overcommit['cpu'], # these keys are hard-coded
+            memory_mb_o    = a.overcommit['ram'], # to match nova.conf
+        ) for a in self.host_aggregates]
 
 class TabGroup(tabs.TabGroup):
     tabs = (SummaryTab, ProjectsTab)

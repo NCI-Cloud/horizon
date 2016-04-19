@@ -39,6 +39,55 @@ class ProjectUsageTable(tables.DataTable):
         #table_actions = (ServiceFilterAction,)
         hidden_title = False
 
+class Format(object):
+    """Helpers for consistent formatting across tables."""
+    precision = 1
+    precision_f = '{{:.{}f}}'.format(precision)
+    overcommit = u'\u00d7 {{factor:.{}f}} = {{total}}'.format(precision)
+
+    @staticmethod
+    def mb(mb):
+        return format_bytes(mb*1024*1024, precision=Format.precision)
+
 class SummaryTable(tables.DataTable):
+    name   = tables.Column('name')
+    vcpu   = tables.Column('vcpus', verbose_name=_('VCPU'))
+    vcpu_o = tables.Column(
+        lambda o: (o.vcpu_o, o.vcpus),
+        verbose_name=_('overcommit'),
+        filters=[lambda (overcommit, vcpus): Format.overcommit.format(factor=overcommit, total=Format.precision_f.format(overcommit*vcpus))]
+    )
+    vcpu_u = tables.Column('vcpus_used', verbose_name=_('allocated'))
+    vcpu_f = tables.Column(
+        lambda o: (o.vcpu_o, o.vcpus, o.vcpus_used),
+        verbose_name = _('free'),
+        filters      = [lambda (overcommit, vcpus, used): Format.precision_f.format(overcommit*vcpus-used)],
+    )
+    ram    = tables.Column(
+        'memory_mb',
+        verbose_name = _('RAM'),
+        filters      = [Format.mb]
+    )
+    ram_o  = tables.Column(
+        lambda o: (o.memory_mb_o, o.memory_mb),
+        verbose_name=_('overcommit'),
+        filters = [ # (these are applied in the order written, with output(n)=input(n+1)
+            lambda (o, m):  (o, Format.mb(m)),
+            lambda (o, fm): Format.overcommit.format(factor=o, total=fm),
+        ]
+    )
+    ram_u  = tables.Column(
+        'memory_mb_used',
+        verbose_name = _('allocated'),
+        filters      = [Format.mb]
+    )
+    ram_f = tables.Column(
+        lambda o: (o.memory_mb_o, o.memory_mb, o.memory_mb_used),
+        verbose_name = _('free'),
+        filters      = [
+            lambda (overcommit, mb, used): overcommit*mb-used,
+            Format.mb,
+        ]
+    )
     class Meta(object):
         name = 'summary'

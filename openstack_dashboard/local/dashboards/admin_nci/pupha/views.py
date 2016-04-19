@@ -15,6 +15,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import re
+
 from openstack_dashboard import api
 from openstack_dashboard.openstack.common import log as logging
 
@@ -29,12 +31,29 @@ from .constants import short_name # separate import because it feels weird havin
 from novaclient.exceptions import NotFound as NotFoundNova
 from keystoneclient.openstack.common.apiclient.exceptions import NotFound as NotFoundKeystone
 
+from django.conf import settings
+
 LOG = logging.getLogger(__name__)
+
+def get_overcommit_ratios():
+    """Return {cpu,ram,disk}_allocation_ratio values from django settings.
+    Return 1.0 for any missing allocation ratios.
+    """
+    setting = 'NCI_NOVA_COMMIT_RATIOS'
+    resources = ['cpu', 'ram', 'disk'] # hard-coded strings to match names in nova.conf
+    ratios = getattr(settings, setting, {})
+    for r in resources:
+        if r not in ratios:
+            LOG.debug('Missing {} overcommit ratio in {}; assuming value of 1.'.format(r, setting))
+            ratios[r] = 1.
+    return ratios
 
 class HostAggregate(object):
     """
     Has attributes:
       aggregate   --  object from api.nova.aggregate_details_list
+      overcommit  --  dict with keys matching "{}_allocation_ratio" in nova.conf
+                      (see comment in get_overcommit_ratios)
       hypervisors --  list of objects with attributes including
                         instances -- list of objects with attributes including
                                        project
@@ -126,5 +145,19 @@ class IndexView(tabs.TabbedTableView):
             for ha in host_aggregates:
                 if h.service['host'] in ha.aggregate.hosts:
                     ha.hypervisors.append(h)
+
+        # get overcommit values and allocated/available resource counts
+        oc = get_overcommit_ratios()
+        p = re.compile(r'^(?P<resource>cpu|ram|disk)_allocation_ratio$')
+        for h in host_aggregates:
+            h.overcommit = {k:oc[k] for k in oc} # copy default overcommit values
+            for k in h.aggregate.metadata:
+                m = p.match(k)
+                if m:
+                    try:
+                        h.overcommit[m.group('resource')] = float(h.aggregate.metadata[k])
+                    except ValueError:
+                        LOG.debug('Could not parse host aggregate "{key}" metadata value "{value}" as float.'.format(key=k, value=h.aggregate.metadata[k]))
+                        continue
 
         return super(IndexView, self).get_tabs(request, host_aggregates=host_aggregates, **kwargs)
