@@ -146,8 +146,11 @@ class HypervisorTable(tables.DataTable):
         classes = ['usage']
     )
     name = tables.Column(
-        lambda h: short_name(getattr(h, h.NAME_ATTR)),
+        lambda h: short_name(getattr(h, h.NAME_ATTR)) + u'\u21d7', # \u21d7 is very roughly what wikipedia uses to mark external links...
         verbose_name = _('Name'),
+
+        # this is the hackiest line of code ever written:
+        link = lambda h: 'https://tenjin-monitor.nci.org.au/ganglia/?p=2&c=tenjin&h='+short_name(getattr(h, h.NAME_ATTR)),
     )
     status = tables.Column('status')
     state = tables.Column('state')
