@@ -18,7 +18,7 @@
 import types
 import itertools
 
-from .constants import PROJECTS_TEMPLATE_NAME, SUMMARY_TEMPLATE_NAME
+from .constants import TABLES_TEMPLATE_NAME, SUMMARY_TEMPLATE_NAME
 from . import tables
 
 from horizon import tabs
@@ -39,7 +39,7 @@ class ProjectsTab(tabs.TableTab):
     """
     name = _('Projects') # rendered as text in html
     slug = 'projects' # url slug and id attribute (=> unique)
-    template_name = PROJECTS_TEMPLATE_NAME
+    template_name = TABLES_TEMPLATE_NAME
 
     @staticmethod
     def table_factory(aggregate):
@@ -85,7 +85,7 @@ class ProjectsTab(tabs.TableTab):
         # sum usage per project, and sort from most vcpus to fewest
         return sorted([DictObject(
             id        = p.id,
-            project   = p, 
+            project   = p,
             vcpus     = sum(i.flavor.vcpus for i in instances if i.project == p),
             memory_mb = sum(i.flavor.ram   for i in instances if i.project == p)
         ) for p in projects], key=lambda pu:pu.vcpus, reverse=True)
@@ -131,8 +131,85 @@ class SummaryTab(tabs.TableTab):
             memory_mb_o    = a.overcommit['ram'], # to match nova.conf
         ) for a in self.host_aggregates]
 
+
+class HypervisorsTab(tabs.TableTab):
+    """
+    Lists hypervisors within each host aggregate, and instances and resource
+    usage on each hypervisor.
+
+    This shares code with ProjectsTab, so should probably be refactored.
+
+    If there is ever a hypervisor with name "context" or "aggregate", this
+    will break (see ProjectsTab).
+    """
+    name = _('Hypervisors')
+    slug = 'hypervisors'
+    template_name = TABLES_TEMPLATE_NAME
+
+    @staticmethod
+    def table_factory(aggregate):
+        class HypervisorTable(tables.HypervisorTable):
+            class Meta(tables.HypervisorTable.Meta):
+                name = verbose_name = aggregate.name
+        return HypervisorTable
+
+    def __init__(self, tab_group, request):
+        """
+        This is copy+paste from ProjectsTab... DRY!
+        """
+        try:
+            # make sure host aggregates are exposed
+            self.host_aggregates = tab_group.host_aggregates
+        except AttributeError:
+            # raise the exception with slightly better description
+            raise AttributeError('{} must be part of a tab group that exposes host aggregates'.format(self.__class__.__name__))
+
+        # define table_classes, which get used in TableTab.__init__
+        HypervisorsTab.table_classes = [HypervisorsTab.table_factory(a.aggregate) for a in self.host_aggregates]
+
+        # set up get_{{ table_name }}_data methods, which get called by TableTab
+        for ha in self.host_aggregates:
+            # types.MethodType is used to bind the function to this object;
+            # dummy "agg=agg" parameter is used to force capture of agg
+            setattr(self, 'get_{}_data'.format(ha.aggregate.name), types.MethodType(lambda slf, ha=ha: self.get_aggregate_data(ha), self))
+
+        # remaining initialisation can proceed now that tables are set up
+        super(HypervisorsTab, self).__init__(tab_group, request)
+
+    def get_aggregate_data(self, host_aggregate):
+        """
+        Retrieve data for the specified HostAggregate, in a format that can be
+        understood by an object from table_factory.
+
+        This must be called after (or from within) get_context_data, otherwise
+        the necessary data will not have been loaded.
+        """
+        # decorate hypervisors with some extra information
+        # (need to do this in a context where host_aggregate is defined;
+        # i.e. it cannot be done in the Table code.)
+        for h in host_aggregate.hypervisors:
+            h._meta = DictObject()
+
+            # calculate resource usage, accounting for overcommit
+            hypervisor_attr = {'cpu':'vcpus', 'ram':'memory_mb', 'disk':'local_gb'} # mapping host_aggregate.overcommit keys => hypervisor object attributes
+            h._meta.usages = {k:float(getattr(h, r+'_used'))/(getattr(h, r)*host_aggregate.overcommit[k]) for (k, r) in hypervisor_attr.items()}
+            h._meta.usage = max(h._meta.usages.values())
+            h._meta.overcommit = host_aggregate.overcommit
+
+        return host_aggregate.hypervisors #sorted(xs, key=lambda pu:pu.vcpus, reverse=True)
+
+    def get_context_data(self, request, **kwargs):
+        # parent sets "{{ table_name }}_table" keys corresponding to items in table_classes
+        # (this call causes calls back to get_{}_data for each table in the Tab)
+        context = super(HypervisorsTab, self).get_context_data(request, **kwargs)
+
+        # reorganise that a bit so that the template can iterate dynamically
+        context['tables'] = [context['{}_table'.format(ha.aggregate.name)] for ha in self.host_aggregates]
+        return context
+
+
 class TabGroup(tabs.TabGroup):
-    tabs = (SummaryTab, ProjectsTab)
+    tabs = (SummaryTab, ProjectsTab, HypervisorsTab)
     slug = "pupha" # this is url slug, used with ..
     sticky = True # .. this to store tab state across requests
     def __init__(self, request, **kwargs):

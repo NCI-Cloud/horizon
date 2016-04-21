@@ -19,7 +19,7 @@ import re
 from django.utils.translation import ugettext_lazy as _
 
 TEMPLATE_NAME = 'admin/pupha/index.html'
-PROJECTS_TEMPLATE_NAME = 'admin/pupha/projects.html'
+TABLES_TEMPLATE_NAME = 'admin/pupha/tables.html'
 SUMMARY_TEMPLATE_NAME = 'horizon/common/_detail_table.html'
 TITLE = _('Host Aggregate Details')
 
