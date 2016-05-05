@@ -141,7 +141,7 @@ class IndexView(tabs.TabbedTableView):
 
         # assign hypervisors to host aggregates
         for h in hypervisors:
-            h.instances = hypervisor_instances[short_name(getattr(h, h.NAME_ATTR))]
+            h.instances = hypervisor_instances.get(short_name(getattr(h, h.NAME_ATTR)), [])
             for ha in host_aggregates:
                 if h.service['host'] in ha.aggregate.hosts:
                     ha.hypervisors.append(h)
