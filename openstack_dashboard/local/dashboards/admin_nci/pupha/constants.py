@@ -16,7 +16,9 @@
 #    under the License.
 
 import re
+from openstack_dashboard.openstack.common import log as logging
 from django.utils.translation import ugettext_lazy as _
+from django.conf import settings
 
 TEMPLATE_NAME = 'admin/pupha/index.html'
 TABLES_TEMPLATE_NAME = 'admin/pupha/tables.html'
@@ -42,11 +44,10 @@ def format_bytes(b, precision=0):
 
 def su(vcpus, memory_mb, precision=1):
     return ('{:.'+str(max(0, int(precision)))+'f}').format(max(vcpus, memory_mb/su.memory_mb))
-su.memory_mb = 4096. # how much memory per vcpu
 
 def short_name(hostname):
     """
-    If the given hostname matches the pattern specified below, return a
+    If the given hostname matches the pattern in NCI_HOSTNAME_PATTERN, return a
     substring of the hostname (the group from the pattern match).
 
     This is useful for two things:
@@ -55,6 +56,18 @@ def short_name(hostname):
     """
     m = short_name.p.match(hostname)
     if m:
-        return m.group('n')
+        return m.group('name')
     return hostname
-short_name.p = re.compile(r'^(?P<n>tc\d+)(\.ncmgmt)?$')
+
+def load_settings():
+    LOG = logging.getLogger(__name__)
+    def get_setting(setting, default):
+        try:
+            return getattr(settings, setting)
+        except AttributeError:
+            LOG.debug('Missing {} in Django settings.'.format(setting))
+            return default
+    short_name.p = re.compile(get_setting('NCI_HOSTNAME_PATTERN', r'(?P<name>)'))
+    su.memory_mb = get_setting('NCI_SU_MEMORY_MB', 4096.)
+
+load_settings()

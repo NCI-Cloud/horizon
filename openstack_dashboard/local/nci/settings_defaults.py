@@ -38,3 +38,10 @@ NCI_EXTERNAL_NET_PERM = "openstack.roles.nci_external_net"
 # Per-tenant fixed public IP address allocations.  The default of an empty
 # dictionary means that all tenants will use the global IP allocation pool.
 NCI_FIXED_PUBLIC_IPS = {}
+
+# How much memory per vcpu in 1 SU (service unit, base unit for billing)
+NCI_SU_MEMORY_MB = 4096.
+
+# Pattern to match hypervisor.hypervisor_hostname (e.g. "tc097.ncmgmt") and
+# instance.host_server (e.g. "tc097"), with common part as group 'name'
+NCI_HOSTNAME_PATTERN = r'^(?P<name>tc\d+)(\.ncmgmt)?$'
