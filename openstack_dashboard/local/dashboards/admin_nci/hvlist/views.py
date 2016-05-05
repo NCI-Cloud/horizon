@@ -21,7 +21,6 @@ from openstack_dashboard import api
 from iso8601 import parse_date
 from colorsys import hsv_to_rgb
 import re
-import itertools
 from django.conf import settings
 
 from openstack_dashboard.openstack.common import log as logging
@@ -44,10 +43,6 @@ def short_name(hostname):
     return hostname
 short_name.p = re.compile(r'^tc(?P<n>\d+)$')
 
-def su(vcpus, memory_mb, precision=1):
-    return ('{:.'+str(max(0, int(precision)))+'f}').format(max(vcpus, memory_mb/su.memory_mb))
-su.memory_mb = 4096. # how much memory per vcpu
-
 def binary_prefix_scale(b):
     """Return (prefix, scale) so that (b) B = (b*scale) (prefix)B.
     For example, binary_prefix_scale(1536) == ('Ki', 1024**-1)."""
@@ -59,10 +54,6 @@ def binary_prefix_scale(b):
         scale /= 1024.
         b /= 1024.
     return (p, scale)
-
-def format_bytes(b):
-    p, s = binary_prefix_scale(float(b))
-    return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
 
 def usage_string(now, tot):
     """Return something like "0.5 / 1.0 kB" from now,tot=512,1024."""
@@ -159,6 +150,9 @@ class IndexView(views.APIView):
                 continue
 
             # everything's sane, so set some fields for the template to use
+            def format_bytes(b): # formatter for bytes
+                p, s = binary_prefix_scale(b)
+                return '{scaled:.0f} {prefix}B'.format(scaled=b*s, prefix=p)
             i.project = projects[i.tenant_id]
             i.created = parse_date(i.created)
             i.flavor_name = flav.name
@@ -175,18 +169,7 @@ class IndexView(views.APIView):
             if host not in hypervisor_instances: hypervisor_instances[host] = []
             hypervisor_instances[host].append(i)
 
-        # assign hosts to host aggregates
-        for h in hypervisors:
-            for (ha, agg) in zip(host_aggregates, aggregates):
-                if h.service['host'] in agg.hosts:
-                    ha['hypervisors'].append(h)
-
-        # get overcommit values and allocated/available resource counts
-        key_map = { # map overcommit ratio key -> accessors into hypervisor object for corresponding resource
-            'cpu'  : (lambda h: h.vcpus,     lambda h: h.vcpus_used),
-            'ram'  : (lambda h: h.memory_mb, lambda h: h.memory_mb_used),
-            'disk' : (lambda h: h.local_gb,  lambda h: h.local_gb_used)
-        }
+        # get overcommit values
         oc = get_overcommit_ratios()
         p = re.compile(r'^(?P<resource>cpu|ram|disk)_allocation_ratio$')
         for (a, h) in zip(aggregates, host_aggregates):
@@ -199,16 +182,13 @@ class IndexView(views.APIView):
                     except ValueError:
                         LOG.debug('Could not parse host aggregate "{key}" metadata value "{value}" as float.'.format(key=k, value=a.metadata[k]))
                         continue
-            h['count'] = {}
-            h['count']['physical'] = {k:sum(key_map[k][0](hyp) for hyp in h['hypervisors']) for k in oc}
-            h['count']['max'] = {k:h['count']['physical'][k]*h['overcommit'][k] for k in oc}
-            h['count']['allocated'] = {k:sum(key_map[k][1](hyp) for hyp in h['hypervisors']) for k in oc}
-            h['count']['remaining'] = {k:h['count']['max'][k] - h['count']['allocated'][k] for k in oc}
+            h['pretty_overcommit'] = '{cpu} / {ram} / {disk}'.format(**h['overcommit'])
 
-            # format counts now that they're calculated
-            for k in h['count']:
-                h['count'][k]['ram']  = format_bytes(1024*1024*h['count'][k]['ram'])
-                h['count'][k]['disk'] = format_bytes(1024*1024*1024*h['count'][k]['disk'])
+        # assign hosts to host aggregates
+        for h in hypervisors:
+            for (ha, agg) in zip(host_aggregates, aggregates):
+                if h.service['host'] in agg.hosts:
+                    ha['hypervisors'].append(h)
 
         for ha in host_aggregates:
             for h in ha['hypervisors']:
@@ -255,24 +235,6 @@ class IndexView(views.APIView):
             # sort lists of hypervisors in host aggregates
             ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
 
-            # calculate each project's resource usage:
-
-            # find instances running in this host aggregate
-            ins = list(itertools.chain(*(h.instances for h in ha['hypervisors'])))
-
-            # make list of (project id, vcpus used, memory mb used) for all projects
-            project_usage = [{
-                'project' : project,
-                'cpu'     : sum(flavs[i.flavor['id']].vcpus for i in ins if i.tenant_id == project.id),
-                'ram'     : sum(flavs[i.flavor['id']].ram for i in ins if i.tenant_id == project.id),
-            } for project in projects.values()]
-            project_usage = filter(lambda pu: pu['cpu'] > 0 or pu['ram'] > 0, project_usage)
-            for pu in project_usage:
-                pu['su'] = su(pu['cpu'], pu['ram'])
-                pu['ram'] = format_bytes(pu['ram']*1024*1024)
-            project_usage.sort(key=lambda pu: pu['cpu'], reverse=True) # sort from most vcpus to least
-            ha['project_usage'] = project_usage
-
         # scale by 100 everything that will be rendered as a percentage...
         # this would be better in a custom template tag, but here is a link
         # to the documentation I could find about how to do that in horizon:
@@ -290,5 +252,4 @@ class IndexView(views.APIView):
         context['host_aggregates'] = host_aggregates
         context['used_count'] = sum(1 for h in hypervisors if h.instances)
         context['instance_count'] = sum(len(h.instances) for h in hypervisors)
-        context['su_ram_per_vcpu'] = format_bytes(su.memory_mb*1024*1024)
         return context

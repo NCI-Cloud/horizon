@@ -83,50 +83,7 @@
 <p style="clear:left;height:2em"><!-- hello i am hacky --></p>
 {% spaceless %}
 {% for ha in host_aggregates %}
-<h3>{{ ha.name }}</h3>
-<table class="table table-bordered">
-<thead>
-  <tr class="table_caption">{# the css assumes that the header row comes after a tr.table_caption, so this has to be here to make the table render correctly #}</tr>
-  <tr>
-    <th></th>
-    <th>VCPU</th>
-    <th>RAM</th>
-    <th>Disk</th>
-  </tr>
-</thead>
-<tbody>
-  <tr>
-    <td>Overcommit ratio</td>
-    <td>{{ ha.overcommit.cpu|floatformat:2 }}</td>
-    <td>{{ ha.overcommit.ram|floatformat:2 }}</td>
-    <td>{{ ha.overcommit.disk|floatformat:2 }}</td>
-  </tr>
-  <tr>
-    <td>Physical count</td>
-    <td>{{ ha.count.physical.cpu }}</td>
-    <td>{{ ha.count.physical.ram }}</td>
-    <td>{{ ha.count.physical.disk }}</td>
-  </tr>
-  <tr>
-    <td>Maximum allocation</td>
-    <td>{{ ha.count.max.cpu }}</td>
-    <td>{{ ha.count.max.ram }}</td>
-    <td>{{ ha.count.max.disk }}</td>
-  </tr>
-  <tr>
-    <td>Allocated</td>
-    <td>{{ ha.count.allocated.cpu }}</td>
-    <td>{{ ha.count.allocated.ram }}</td>
-    <td>{{ ha.count.allocated.disk }}</td>
-  </tr>
-  <tr>
-    <td>Remaining</td>
-    <td>{{ ha.count.remaining.cpu }}</td>
-    <td>{{ ha.count.remaining.ram }}</td>
-    <td>{{ ha.count.remaining.disk }}</td>
-  </tr>
-</tbody>
-</table>
+<h4>{{ ha.name }} <span class="overcommit">overcommit ratios {{ha.pretty_overcommit}}</span></h4>
 {% if ha.hypervisors %}
 <ul class="hypervisors">{% for h in ha.hypervisors %}
 <li style="background-color:{{ h.color }}" class="{{h.cpu_overcommit}} {{h.mem_overcommit}} {{h.disk_overcommit}}">
@@ -198,31 +155,7 @@
         </dl>
     </div>
     </div>
-</li>{% endfor %}</ul>{% else %}<p>This host aggregate contains no hosts.</p>{% endif %}
-<table class="table table-bordered">
-<thead>
-  <tr class="table_caption">{# see other <table> #}</tr>
-  <tr>
-    <th>Code</th>
-    <th>Project</th>
-    <th>VCPU</th>
-    <th>RAM</th>
-    <th><abbr title="1 SU ~ 1 VCPU x {{ su_ram_per_vcpu }} RAM">SU</abbr></th>
-  </tr>
-</thead>
-<tbody>
-{% for pu in ha.project_usage %}
-  <tr>
-    <td>{{ pu.project.name }}</td>
-    <td>{{ pu.project.description }}</td>
-    <td>{{ pu.cpu }}</td>
-    <td>{{ pu.ram }}</td>
-    <td>{{ pu.su }}</td>
-  </tr>
-{% endfor %}
-</tbody>
-</table>
-{% endfor %}
+</li>{% endfor %}</ul>{% else %}<p>This host aggregate contains no hosts.</p>{% endif %}{% endfor %}
 {% endspaceless %}
 {% endblock %}
 
