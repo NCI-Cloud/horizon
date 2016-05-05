@@ -52,7 +52,6 @@ def short_name(hostname):
     This is useful for two things:
       - making output more concise, by removal of common substring
       - data matching, e.g. "tc0123" and "tc0123.ncmgmt" refer to same entity
-    
     """
     m = short_name.p.match(hostname)
     if m:
