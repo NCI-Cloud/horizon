@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% load i18n %}
+{% block title %}{{ page_title }}{% endblock %}{# page_title is translated in view #}
+
+{% block css %}
+    {% include "_stylesheets.html" %}
+    <link href="{{ STATIC_URL }}admin_nci/css/pupha.css" rel="stylesheet">
+{% endblock %}
+
+{% block main %}
+<div class="row">
+  <div class="col-sm-12">
+    {{ tab_group.render }}
+  </div>
+</div>
+{% endblock %}
