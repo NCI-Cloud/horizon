@@ -97,6 +97,13 @@ def get_overcommit_ratios():
             ratios[r] = 1.
     return ratios
 
+class AggregateHack(object):
+    def __init__(self, hypervisors):
+        self.id       = 0
+        self.name     = '(none)'
+        self.hosts    = [h.service['host'] for h in hypervisors]
+        self.metadata = {}
+
 class IndexView(views.APIView):
     template_name = 'admin/hvlist/index.html'
 
@@ -109,6 +116,7 @@ class IndexView(views.APIView):
         flavs = api.nova.flavor_list(request)
 
         # reorganise some
+        if not aggregates: aggregates = [AggregateHack(hypervisors)]
         host_aggregates = [{'name':a.name, 'hypervisors':[]} for a in aggregates]
         projects = {p.id : p for p in projects}
         flavs = {f.id : f for f in flavs}
@@ -233,7 +241,7 @@ class IndexView(views.APIView):
                 h.disk_overcommit = 'overcommitted' if disk_bytes_used > total_disk_bytes else ''
 
             # sort lists of hypervisors in host aggregates
-            ha['hypervisors'] = sorted(ha['hypervisors'], lambda hyp: hyp.short_name)
+            ha['hypervisors'] = sorted(ha['hypervisors'], key=lambda hyp: hyp.short_name)
 
         # scale by 100 everything that will be rendered as a percentage...
         # this would be better in a custom template tag, but here is a link

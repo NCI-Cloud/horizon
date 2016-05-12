@@ -23,7 +23,7 @@ from openstack_dashboard.openstack.common import log as logging
 from horizon import tabs
 from horizon import messages
 
-from .tabs import TabGroup
+from .tabs import TabGroup, DictObject
 from . import constants
 from .constants import short_name # separate import because it feels weird having short_name live in constants, so that may change..
 
@@ -96,6 +96,18 @@ class IndexView(tabs.TabbedTableView):
 
         # (only) this list ends up being shared with the TabGroup
         host_aggregates = [HostAggregate(aggregate=a) for a in aggregates]
+
+        # if there are no aggregates, invent a HostAggregate to hold everything
+        # (this is hacky but that's okay because nobody should actually want to
+        # use this panel if running a cloud with no host aggregates.. this code
+        # exists just so the dashboard doesn't break in that odd non-use case.)
+        if not host_aggregates:
+            host_aggregates = [HostAggregate(aggregate=DictObject(
+                id       = 0,
+                name     = '(none)',
+                hosts    = [h.service['host'] for h in hypervisors],
+                metadata = {}
+            ))]
 
         # check if any instances are missing necessary data, and if so, skip them
         hypervisor_instances = {} # otherwise, add them to this (short_name => [instance])

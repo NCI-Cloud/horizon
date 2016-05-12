@@ -57,7 +57,7 @@ class ProjectsTab(tabs.TableTab):
             raise AttributeError('{} must be part of a tab group that exposes host aggregates'.format(self.__class__.__name__))
 
         # define table_classes, which get used in TableTab.__init__
-        ProjectsTab.table_classes = [ProjectsTab.table_factory(a.aggregate) for a in self.host_aggregates]
+        self.table_classes = [ProjectsTab.table_factory(a.aggregate) for a in self.host_aggregates]
 
         # set up get_{{ table_name }}_data methods, which get called by TableTab
         for ha in self.host_aggregates:
